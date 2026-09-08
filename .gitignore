@@ -1,0 +1,19 @@
+# ── Secretos ──────────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+api-server/.env
+api-server/.env.local
+
+# Los .example SÍ se versionan: solo llevan nombres de variables, sin valores.
+!.env.example
+!*.env.example
+
+# Contraseñas de TEAM y el código de administrador local (ver
+# taller-demo/config-local.example.js). Nunca deben llegar a la PWA publicada.
+taller-demo/config-local.js
+
+# ── Dependencias ──────────────────────────────────────────────────────────────
+node_modules/
