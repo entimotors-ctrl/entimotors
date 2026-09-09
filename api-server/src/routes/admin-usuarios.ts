@@ -1,0 +1,272 @@
+import { Router, type Request, type Response, type NextFunction } from "express";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import ws from "ws";
+import { logger } from "../lib/logger.js";
+
+/* ============================================================================
+ * Gestión de usuarios de ENTIMOTORS OS.
+ *
+ * DOS CLIENTES, A PROPÓSITO:
+ *
+ *   servidor  → clave de servicio. SOLO para Auth (crear la cuenta, listar
+ *               correos). Nunca escribe en `perfiles`.
+ *
+ *   comoElAdmin(token) → clave pública + el token de quien llama. TODAS las
+ *               escrituras en `perfiles` van por aquí.
+ *
+ * ¿Por qué? Porque la base tiene `proteger_rol_perfil_trigger`, que solo deja
+ * cambiar roles a un administrador CON SESIÓN. Con la clave de servicio
+ * `auth.uid()` es nulo y el disparador rechaza — como debe ser. En vez de
+ * saltárselo, el backend actúa en nombre del admin: así este servidor no puede
+ * hacer sobre `perfiles` nada que el propio admin no pudiera hacer.
+ * ==========================================================================*/
+
+const SUPABASE_URL = process.env["SUPABASE_URL"];
+const SERVICE_KEY = process.env["SUPABASE_SERVICE_KEY"];
+const ANON_KEY = process.env["SUPABASE_ANON_KEY"];
+
+if (!SUPABASE_URL || !SERVICE_KEY) {
+  throw new Error("Faltan SUPABASE_URL y SUPABASE_SERVICE_KEY");
+}
+
+// realtime.transport: en Node 20 no hay WebSocket nativo y createClient falla
+// al construirse. El resto del servidor ya lo hace así (ver lib/supabase.ts).
+const servidor: SupabaseClient = createClient(SUPABASE_URL, SERVICE_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false },
+  realtime: { transport: ws },
+});
+
+/* Sin ANON_KEY no hay forma de escribir en `perfiles` en nombre del admin, y
+   la alternativa —usar la clave de servicio— es justo lo que no se hace aquí.
+   Se corta ANTES de tocar nada: si se dejara reventar dentro del POST, la
+   cuenta de Auth ya estaría creada y quedaría huérfana, con rol de mecánico
+   por el disparador y sin contraseña que nadie conozca. Medido. */
+function exigirConfiguracion(_req: Request, res: Response, next: NextFunction): void {
+  if (!ANON_KEY) {
+    logger.error("falta SUPABASE_ANON_KEY: la gestión de usuarios queda apagada");
+    res.status(503).json({
+      error: "El servidor no tiene configurada SUPABASE_ANON_KEY. " +
+             "Hay que añadirla en las variables de entorno (es la clave pública, la misma del frontend).",
+    });
+    return;
+  }
+  next();
+}
+
+function comoElAdmin(token: string): SupabaseClient {
+  if (!ANON_KEY) throw new Error("Falta SUPABASE_ANON_KEY en el entorno del servidor");
+  return createClient(SUPABASE_URL as string, ANON_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    realtime: { transport: ws },
+    global: { headers: { Authorization: `Bearer ${token}` } },
+  });
+}
+
+/* El rol `admin` no se reparte desde aquí: el sistema admite uno solo y ya
+   existe. La lista es blanca a propósito — lo que no esté, se rechaza. */
+const ROLES_ASIGNABLES = ["mecanico", "cajero", "desarrollador"] as const;
+type RolAsignable = (typeof ROLES_ASIGNABLES)[number];
+
+interface PeticionAdmin extends Request {
+  quien?: { id: string; correo: string; nombre: string; token: string };
+}
+
+/* ───────────────────────── autorización ─────────────────────────
+   No se mira nada de lo que diga el navegador: la identidad sale del token,
+   y el rol, de la tabla `perfiles`. */
+async function exigirAdmin(req: PeticionAdmin, res: Response, next: NextFunction): Promise<void> {
+  const cabecera = req.headers.authorization ?? "";
+  const token = cabecera.startsWith("Bearer ") ? cabecera.slice(7).trim() : "";
+  if (!token) {
+    res.status(401).json({ error: "Hace falta iniciar sesión." });
+    return;
+  }
+
+  const { data, error } = await servidor.auth.getUser(token);
+  if (error || !data?.user) {
+    res.status(401).json({ error: "La sesión no es válida o ha caducado." });
+    return;
+  }
+
+  const { data: perfil, error: errPerfil } = await servidor
+    .from("perfiles").select("id, nombre, rol, activo").eq("id", data.user.id).maybeSingle();
+
+  if (errPerfil) {
+    logger.error({ err: errPerfil }, "no se pudo leer el perfil de quien llama");
+    res.status(500).json({ error: "No se pudo comprobar el perfil." });
+    return;
+  }
+  if (!perfil || perfil.activo !== true || perfil.rol !== "admin") {
+    res.status(403).json({ error: "Solo el administrador puede gestionar usuarios." });
+    return;
+  }
+
+  req.quien = { id: perfil.id, correo: data.user.email ?? "", nombre: perfil.nombre, token };
+  next();
+}
+
+/* ───────────────────────── validaciones ───────────────────────── */
+const CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function validarAlta(cuerpo: Record<string, unknown>): { ok: true; datos: { correo: string; nombre: string; telefono: string; rol: RolAsignable } } | { ok: false; error: string } {
+  const correo = String(cuerpo["correo"] ?? "").trim().toLowerCase();
+  const nombre = String(cuerpo["nombre"] ?? "").trim();
+  const telefono = String(cuerpo["telefono"] ?? "").trim();
+  const rol = String(cuerpo["rol"] ?? "").trim();
+
+  if (!CORREO.test(correo) || correo.length > 254) return { ok: false, error: "El correo no tiene una forma válida." };
+  if (nombre.length < 2 || nombre.length > 60) return { ok: false, error: "El nombre debe tener entre 2 y 60 letras." };
+  if (telefono && !/^[0-9+\-\s()]{6,20}$/.test(telefono)) return { ok: false, error: "El teléfono no tiene una forma válida." };
+  if (rol === "admin") return { ok: false, error: "No se puede crear otro administrador. El sistema admite uno solo." };
+  if (!ROLES_ASIGNABLES.includes(rol as RolAsignable)) return { ok: false, error: `El rol debe ser uno de: ${ROLES_ASIGNABLES.join(", ")}.` };
+
+  return { ok: true, datos: { correo, nombre, telefono, rol: rol as RolAsignable } };
+}
+
+/* Contraseña de un solo uso, generada en el servidor. NO se devuelve, NO se
+   guarda y NO se escribe en ningún registro: existe solo el instante que tarda
+   Supabase en recibirla. Quien entre lo hará por el enlace de acceso. */
+function claveDeUnUso(): string {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%*";
+  const bytes = new Uint8Array(32);
+  (globalThis.crypto as Crypto).getRandomValues(bytes);
+  return Array.from(bytes, (b) => abc[b % abc.length]).join("");
+}
+
+const router = Router();
+
+/* ───────────────────── GET /api/admin/usuarios ───────────────────── */
+router.get("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req: PeticionAdmin, res: Response) => {
+  const { data: perfiles, error } = await comoElAdmin(req.quien!.token)
+    .from("perfiles").select("id, nombre, rol, telefono, activo, creado_en").order("nombre");
+
+  if (error) {
+    logger.error({ err: error }, "no se pudieron listar los perfiles");
+    res.status(500).json({ error: "No se pudo leer la lista del equipo." });
+    return;
+  }
+
+  // los correos viven en Auth, no en `perfiles`
+  const correos = new Map<string, string>();
+  const { data: cuentas } = await servidor.auth.admin.listUsers({ page: 1, perPage: 200 });
+  for (const u of cuentas?.users ?? []) if (u.email) correos.set(u.id, u.email);
+
+  res.json({
+    usuarios: (perfiles ?? []).map((p) => ({
+      id: p.id, nombre: p.nombre, correo: correos.get(p.id) ?? "",
+      telefono: p.telefono ?? "", rol: p.rol, activo: p.activo,
+      creadoEn: p.creado_en, esUsted: p.id === req.quien!.id,
+    })),
+  });
+});
+
+/* ───────────────────── POST /api/admin/usuarios ───────────────────── */
+router.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req: PeticionAdmin, res: Response) => {
+  const v = validarAlta((req.body ?? {}) as Record<string, unknown>);
+  if (!v.ok) { res.status(400).json({ error: v.error }); return; }
+  const { correo, nombre, telefono, rol } = v.datos;
+
+  const { data: creado, error: errAlta } = await servidor.auth.admin.createUser({
+    email: correo,
+    password: claveDeUnUso(),          // se descarta al instante; nadie la conoce
+    email_confirm: true,
+    user_metadata: { nombre },
+  });
+
+  if (errAlta || !creado?.user) {
+    const msg = errAlta?.message ?? "";
+    logger.warn({ correo }, "alta de usuario rechazada");   // el correo sí, la clave nunca
+    res.status(/already|registered|exists/i.test(msg) ? 409 : 400)
+       .json({ error: /already|registered|exists/i.test(msg) ? "Ya existe una cuenta con ese correo." : "No se pudo crear la cuenta." });
+    return;
+  }
+
+  const nuevoId = creado.user.id;
+
+  // el disparador `al_crear_usuario` ya hizo el perfil como mecánico;
+  // aquí se le pone el nombre, el teléfono y el rol — en nombre del admin
+  const { error: errPerfil } = await comoElAdmin(req.quien!.token)
+    .from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId);
+
+  if (errPerfil) {
+    // sin perfil correcto la cuenta no sirve: se deshace el alta
+    await servidor.auth.admin.deleteUser(nuevoId).catch(() => undefined);
+    logger.error({ err: errPerfil }, "no se pudo fijar el perfil; alta deshecha");
+    res.status(400).json({ error: `No se pudo asignar el rol: ${errPerfil.message}` });
+    return;
+  }
+
+  // enlace de un solo uso para que la persona ponga su propia contraseña
+  let enlace: string | null = null;
+  try {
+    const { data: link } = await servidor.auth.admin.generateLink({ type: "recovery", email: correo });
+    enlace = link?.properties?.action_link ?? null;
+  } catch { enlace = null; }
+
+  res.status(201).json({
+    usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
+    enlaceParaEstablecerClave: enlace,
+    nota: enlace
+      ? "Pásale este enlace a la persona. Es de un solo uso: ahí elige su contraseña."
+      : "La cuenta está creada. Para darle contraseña: panel de Supabase → Authentication → el usuario → Reset password.",
+  });
+});
+
+/* ───────────────── PATCH /api/admin/usuarios/:id ───────────────── */
+router.patch("/admin/usuarios/:id", exigirConfiguracion, exigirAdmin, async (req: PeticionAdmin, res: Response) => {
+  const id = String(req.params["id"] ?? "");
+  const cuerpo = (req.body ?? {}) as Record<string, unknown>;
+
+  if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "Identificador no válido." }); return; }
+
+  // el administrador no se toca a sí mismo desde aquí: un descuido lo dejaría
+  // fuera de su propio sistema, y no habría forma de volver a entrar
+  if (id === req.quien!.id) {
+    res.status(400).json({ error: "No puedes modificar tu propia cuenta administrativa desde esta pantalla." });
+    return;
+  }
+
+  const cambios: Record<string, unknown> = {};
+
+  if ("rol" in cuerpo) {
+    const rol = String(cuerpo["rol"] ?? "").trim();
+    if (rol === "admin") { res.status(400).json({ error: "No se puede nombrar otro administrador. El sistema admite uno solo." }); return; }
+    if (!ROLES_ASIGNABLES.includes(rol as RolAsignable)) { res.status(400).json({ error: `El rol debe ser uno de: ${ROLES_ASIGNABLES.join(", ")}.` }); return; }
+    cambios["rol"] = rol;
+  }
+  if ("activo" in cuerpo) {
+    if (typeof cuerpo["activo"] !== "boolean") { res.status(400).json({ error: "«activo» tiene que ser verdadero o falso." }); return; }
+    cambios["activo"] = cuerpo["activo"];
+  }
+  if ("nombre" in cuerpo) {
+    const nombre = String(cuerpo["nombre"] ?? "").trim();
+    if (nombre.length < 2 || nombre.length > 60) { res.status(400).json({ error: "El nombre debe tener entre 2 y 60 letras." }); return; }
+    cambios["nombre"] = nombre;
+  }
+  if ("telefono" in cuerpo) {
+    const tel = String(cuerpo["telefono"] ?? "").trim();
+    if (tel && !/^[0-9+\-\s()]{6,20}$/.test(tel)) { res.status(400).json({ error: "El teléfono no tiene una forma válida." }); return; }
+    cambios["telefono"] = tel || null;
+  }
+  if (Object.keys(cambios).length === 0) { res.status(400).json({ error: "No has pedido ningún cambio." }); return; }
+
+  // que el objetivo exista, y que no sea el administrador
+  const { data: destino } = await servidor.from("perfiles").select("id, rol").eq("id", id).maybeSingle();
+  if (!destino) { res.status(404).json({ error: "Ese usuario no existe." }); return; }
+  if (destino.rol === "admin") { res.status(400).json({ error: "La cuenta del administrador no se modifica desde esta pantalla." }); return; }
+
+  // la escritura va EN NOMBRE DEL ADMIN: RLS y el disparador deciden
+  const { data: actualizado, error } = await comoElAdmin(req.quien!.token)
+    .from("perfiles").update(cambios).eq("id", id).select("id, nombre, rol, telefono, activo").maybeSingle();
+
+  if (error) {
+    logger.warn({ err: error, id }, "la base rechazó el cambio de perfil");
+    res.status(400).json({ error: error.message });   // el mensaje de la base, tal cual
+    return;
+  }
+  if (!actualizado) { res.status(403).json({ error: "La base no permitió el cambio." }); return; }
+
+  res.json({ usuario: actualizado });
+});
+
+export default router;
