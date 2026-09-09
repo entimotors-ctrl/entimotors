@@ -20655,27 +20655,27 @@ var require_router = __commonJS({
     var slice = Array.prototype.slice;
     var flatten = Array.prototype.flat;
     var methods = METHODS.map((method) => method.toLowerCase());
-    module.exports = Router8;
+    module.exports = Router9;
     module.exports.Route = Route;
-    function Router8(options) {
-      if (!(this instanceof Router8)) {
-        return new Router8(options);
+    function Router9(options) {
+      if (!(this instanceof Router9)) {
+        return new Router9(options);
       }
       const opts = options || {};
-      function router8(req, res, next) {
-        router8.handle(req, res, next);
+      function router9(req, res, next) {
+        router9.handle(req, res, next);
       }
-      Object.setPrototypeOf(router8, this);
-      router8.caseSensitive = opts.caseSensitive;
-      router8.mergeParams = opts.mergeParams;
-      router8.params = {};
-      router8.strict = opts.strict;
-      router8.stack = [];
-      return router8;
+      Object.setPrototypeOf(router9, this);
+      router9.caseSensitive = opts.caseSensitive;
+      router9.mergeParams = opts.mergeParams;
+      router9.params = {};
+      router9.strict = opts.strict;
+      router9.stack = [];
+      return router9;
     }
-    Router8.prototype = function() {
+    Router9.prototype = function() {
     };
-    Router8.prototype.param = function param(name, fn) {
+    Router9.prototype.param = function param(name, fn) {
       if (!name) {
         throw new TypeError("argument name is required");
       }
@@ -20695,7 +20695,7 @@ var require_router = __commonJS({
       params.push(fn);
       return this;
     };
-    Router8.prototype.handle = function handle(req, res, callback) {
+    Router9.prototype.handle = function handle(req, res, callback) {
       if (!callback) {
         throw new TypeError("argument callback is required");
       }
@@ -20822,7 +20822,7 @@ var require_router = __commonJS({
         }
       }
     };
-    Router8.prototype.use = function use(handler) {
+    Router9.prototype.use = function use(handler) {
       let offset = 0;
       let path4 = "/";
       if (typeof handler !== "function") {
@@ -20855,7 +20855,7 @@ var require_router = __commonJS({
       }
       return this;
     };
-    Router8.prototype.route = function route(path4) {
+    Router9.prototype.route = function route(path4) {
       const route2 = new Route(path4);
       const layer = new Layer(path4, {
         sensitive: this.caseSensitive,
@@ -20870,7 +20870,7 @@ var require_router = __commonJS({
       return route2;
     };
     methods.concat("all").forEach(function(method) {
-      Router8.prototype[method] = function(path4) {
+      Router9.prototype[method] = function(path4) {
         const route = this.route(path4);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
@@ -21053,13 +21053,13 @@ var require_application = __commonJS({
     var compileTrust = require_utils3().compileTrust;
     var resolve = __require("node:path").resolve;
     var once = require_once();
-    var Router8 = require_router();
+    var Router9 = require_router();
     var slice = Array.prototype.slice;
     var flatten = Array.prototype.flat;
     var app2 = exports = module.exports = {};
     var trustProxyDefaultSymbol = "@@symbol:trust_proxy_default";
     app2.init = function init() {
-      var router8 = null;
+      var router9 = null;
       this.cache = /* @__PURE__ */ Object.create(null);
       this.engines = /* @__PURE__ */ Object.create(null);
       this.settings = /* @__PURE__ */ Object.create(null);
@@ -21068,13 +21068,13 @@ var require_application = __commonJS({
         configurable: true,
         enumerable: true,
         get: function getrouter() {
-          if (router8 === null) {
-            router8 = new Router8({
+          if (router9 === null) {
+            router9 = new Router9({
               caseSensitive: this.enabled("case sensitive routing"),
               strict: this.enabled("strict routing")
             });
           }
-          return router8;
+          return router9;
         }
       });
     };
@@ -21145,15 +21145,15 @@ var require_application = __commonJS({
       if (fns.length === 0) {
         throw new TypeError("app.use() requires a middleware function");
       }
-      var router8 = this.router;
+      var router9 = this.router;
       fns.forEach(function(fn2) {
         if (!fn2 || !fn2.handle || !fn2.set) {
-          return router8.use(path4, fn2);
+          return router9.use(path4, fn2);
         }
         debug(".use app under %s", path4);
         fn2.mountpath = path4;
         fn2.parent = this;
-        router8.use(path4, function mounted_app(req, res, next) {
+        router9.use(path4, function mounted_app(req, res, next) {
           var orig = req.app;
           fn2.handle(req, res, function(err) {
             Object.setPrototypeOf(req, orig.request);
@@ -23726,7 +23726,7 @@ var require_express = __commonJS({
     var EventEmitter = __require("node:events").EventEmitter;
     var mixin = require_merge_descriptors();
     var proto = require_application();
-    var Router8 = require_router();
+    var Router9 = require_router();
     var req = require_request();
     var res = require_response();
     exports = module.exports = createApplication;
@@ -23748,8 +23748,8 @@ var require_express = __commonJS({
     exports.application = proto;
     exports.request = req;
     exports.response = res;
-    exports.Route = Router8.Route;
-    exports.Router = Router8;
+    exports.Route = Router9.Route;
+    exports.Router = Router9;
     exports.json = bodyParser.json;
     exports.raw = bodyParser.raw;
     exports.static = require_serve_static();
@@ -28145,7 +28145,7 @@ var require_pino = __commonJS({
     function pinoBundlerAbsolutePath(p) {
       try {
         const path4 = __require("path");
-        const outputDir = "/home/wilkin/Escritorio/ENTIMOTORS/api-server/dist";
+        const outputDir = "/home/wilkin/Escritorio/ENTIMOTORS-fase4-multiusuario/api-server/dist";
         return path4.resolve(outputDir, p.replace(/^\.\//, ""));
       } catch (e) {
         const f = new Function("p", "return new URL(p, import.meta.url).pathname");
@@ -61952,14 +61952,14 @@ var require_websocket_server = __commonJS({
 });
 
 // src/app.ts
-var import_express8 = __toESM(require_express2(), 1);
+var import_express9 = __toESM(require_express2(), 1);
 var import_cors = __toESM(require_lib3(), 1);
 var import_pino_http = __toESM(require_logger(), 1);
 import path3 from "path";
 import { fileURLToPath } from "url";
 
 // src/routes/index.ts
-var import_express7 = __toESM(require_express2(), 1);
+var import_express8 = __toESM(require_express2(), 1);
 
 // src/routes/health.ts
 var import_express = __toESM(require_express2(), 1);
@@ -71256,15 +71256,8 @@ router6.post("/registrar", async (req, res) => {
 });
 var rifa_default = router6;
 
-// src/routes/index.ts
-var router7 = (0, import_express7.Router)();
-router7.use("/rifa", rifa_default);
-router7.use(health_default);
-router7.use(admin_auth_default);
-router7.use(products_default);
-router7.use(projects_default);
-router7.use(videos_default);
-var routes_default = router7;
+// src/routes/admin-usuarios.ts
+var import_express7 = __toESM(require_express2(), 1);
 
 // src/lib/logger.ts
 var import_pino = __toESM(require_pino(), 1);
@@ -71284,9 +71277,233 @@ var logger = (0, import_pino.default)({
   }
 });
 
+// src/routes/admin-usuarios.ts
+var SUPABASE_URL2 = process.env["SUPABASE_URL"];
+var SERVICE_KEY = process.env["SUPABASE_SERVICE_KEY"];
+var ANON_KEY = process.env["SUPABASE_ANON_KEY"];
+if (!SUPABASE_URL2 || !SERVICE_KEY) {
+  throw new Error("Faltan SUPABASE_URL y SUPABASE_SERVICE_KEY");
+}
+var servidor = createClient(SUPABASE_URL2, SERVICE_KEY, {
+  auth: { autoRefreshToken: false, persistSession: false },
+  realtime: { transport: wrapper_default }
+});
+function exigirConfiguracion(_req, res, next) {
+  if (!ANON_KEY) {
+    logger.error("falta SUPABASE_ANON_KEY: la gesti\xF3n de usuarios queda apagada");
+    res.status(503).json({
+      error: "El servidor no tiene configurada SUPABASE_ANON_KEY. Hay que a\xF1adirla en las variables de entorno (es la clave p\xFAblica, la misma del frontend)."
+    });
+    return;
+  }
+  next();
+}
+function comoElAdmin(token) {
+  if (!ANON_KEY) throw new Error("Falta SUPABASE_ANON_KEY en el entorno del servidor");
+  return createClient(SUPABASE_URL2, ANON_KEY, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    realtime: { transport: wrapper_default },
+    global: { headers: { Authorization: `Bearer ${token}` } }
+  });
+}
+var ROLES_ASIGNABLES = ["mecanico", "cajero", "desarrollador"];
+async function exigirAdmin(req, res, next) {
+  const cabecera = req.headers.authorization ?? "";
+  const token = cabecera.startsWith("Bearer ") ? cabecera.slice(7).trim() : "";
+  if (!token) {
+    res.status(401).json({ error: "Hace falta iniciar sesi\xF3n." });
+    return;
+  }
+  const { data, error } = await servidor.auth.getUser(token);
+  if (error || !data?.user) {
+    res.status(401).json({ error: "La sesi\xF3n no es v\xE1lida o ha caducado." });
+    return;
+  }
+  const { data: perfil, error: errPerfil } = await servidor.from("perfiles").select("id, nombre, rol, activo").eq("id", data.user.id).maybeSingle();
+  if (errPerfil) {
+    logger.error({ err: errPerfil }, "no se pudo leer el perfil de quien llama");
+    res.status(500).json({ error: "No se pudo comprobar el perfil." });
+    return;
+  }
+  if (!perfil || perfil.activo !== true || perfil.rol !== "admin") {
+    res.status(403).json({ error: "Solo el administrador puede gestionar usuarios." });
+    return;
+  }
+  req.quien = { id: perfil.id, correo: data.user.email ?? "", nombre: perfil.nombre, token };
+  next();
+}
+var CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+function validarAlta(cuerpo) {
+  const correo = String(cuerpo["correo"] ?? "").trim().toLowerCase();
+  const nombre = String(cuerpo["nombre"] ?? "").trim();
+  const telefono = String(cuerpo["telefono"] ?? "").trim();
+  const rol = String(cuerpo["rol"] ?? "").trim();
+  if (!CORREO.test(correo) || correo.length > 254) return { ok: false, error: "El correo no tiene una forma v\xE1lida." };
+  if (nombre.length < 2 || nombre.length > 60) return { ok: false, error: "El nombre debe tener entre 2 y 60 letras." };
+  if (telefono && !/^[0-9+\-\s()]{6,20}$/.test(telefono)) return { ok: false, error: "El tel\xE9fono no tiene una forma v\xE1lida." };
+  if (rol === "admin") return { ok: false, error: "No se puede crear otro administrador. El sistema admite uno solo." };
+  if (!ROLES_ASIGNABLES.includes(rol)) return { ok: false, error: `El rol debe ser uno de: ${ROLES_ASIGNABLES.join(", ")}.` };
+  return { ok: true, datos: { correo, nombre, telefono, rol } };
+}
+function claveDeUnUso() {
+  const abc = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%*";
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => abc[b % abc.length]).join("");
+}
+var router7 = (0, import_express7.Router)();
+router7.get("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req, res) => {
+  const { data: perfiles, error } = await comoElAdmin(req.quien.token).from("perfiles").select("id, nombre, rol, telefono, activo, creado_en").order("nombre");
+  if (error) {
+    logger.error({ err: error }, "no se pudieron listar los perfiles");
+    res.status(500).json({ error: "No se pudo leer la lista del equipo." });
+    return;
+  }
+  const correos = /* @__PURE__ */ new Map();
+  const { data: cuentas } = await servidor.auth.admin.listUsers({ page: 1, perPage: 200 });
+  for (const u of cuentas?.users ?? []) if (u.email) correos.set(u.id, u.email);
+  res.json({
+    usuarios: (perfiles ?? []).map((p) => ({
+      id: p.id,
+      nombre: p.nombre,
+      correo: correos.get(p.id) ?? "",
+      telefono: p.telefono ?? "",
+      rol: p.rol,
+      activo: p.activo,
+      creadoEn: p.creado_en,
+      esUsted: p.id === req.quien.id
+    }))
+  });
+});
+router7.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req, res) => {
+  const v = validarAlta(req.body ?? {});
+  if (!v.ok) {
+    res.status(400).json({ error: v.error });
+    return;
+  }
+  const { correo, nombre, telefono, rol } = v.datos;
+  const { data: creado, error: errAlta } = await servidor.auth.admin.createUser({
+    email: correo,
+    password: claveDeUnUso(),
+    // se descarta al instante; nadie la conoce
+    email_confirm: true,
+    user_metadata: { nombre }
+  });
+  if (errAlta || !creado?.user) {
+    const msg = errAlta?.message ?? "";
+    logger.warn({ correo }, "alta de usuario rechazada");
+    res.status(/already|registered|exists/i.test(msg) ? 409 : 400).json({ error: /already|registered|exists/i.test(msg) ? "Ya existe una cuenta con ese correo." : "No se pudo crear la cuenta." });
+    return;
+  }
+  const nuevoId = creado.user.id;
+  const { error: errPerfil } = await comoElAdmin(req.quien.token).from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId);
+  if (errPerfil) {
+    await servidor.auth.admin.deleteUser(nuevoId).catch(() => void 0);
+    logger.error({ err: errPerfil }, "no se pudo fijar el perfil; alta deshecha");
+    res.status(400).json({ error: `No se pudo asignar el rol: ${errPerfil.message}` });
+    return;
+  }
+  let enlace = null;
+  try {
+    const { data: link } = await servidor.auth.admin.generateLink({ type: "recovery", email: correo });
+    enlace = link?.properties?.action_link ?? null;
+  } catch {
+    enlace = null;
+  }
+  res.status(201).json({
+    usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
+    enlaceParaEstablecerClave: enlace,
+    nota: enlace ? "P\xE1sale este enlace a la persona. Es de un solo uso: ah\xED elige su contrase\xF1a." : "La cuenta est\xE1 creada. Para darle contrase\xF1a: panel de Supabase \u2192 Authentication \u2192 el usuario \u2192 Reset password."
+  });
+});
+router7.patch("/admin/usuarios/:id", exigirConfiguracion, exigirAdmin, async (req, res) => {
+  const id = String(req.params["id"] ?? "");
+  const cuerpo = req.body ?? {};
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    res.status(400).json({ error: "Identificador no v\xE1lido." });
+    return;
+  }
+  if (id === req.quien.id) {
+    res.status(400).json({ error: "No puedes modificar tu propia cuenta administrativa desde esta pantalla." });
+    return;
+  }
+  const cambios = {};
+  if ("rol" in cuerpo) {
+    const rol = String(cuerpo["rol"] ?? "").trim();
+    if (rol === "admin") {
+      res.status(400).json({ error: "No se puede nombrar otro administrador. El sistema admite uno solo." });
+      return;
+    }
+    if (!ROLES_ASIGNABLES.includes(rol)) {
+      res.status(400).json({ error: `El rol debe ser uno de: ${ROLES_ASIGNABLES.join(", ")}.` });
+      return;
+    }
+    cambios["rol"] = rol;
+  }
+  if ("activo" in cuerpo) {
+    if (typeof cuerpo["activo"] !== "boolean") {
+      res.status(400).json({ error: "\xABactivo\xBB tiene que ser verdadero o falso." });
+      return;
+    }
+    cambios["activo"] = cuerpo["activo"];
+  }
+  if ("nombre" in cuerpo) {
+    const nombre = String(cuerpo["nombre"] ?? "").trim();
+    if (nombre.length < 2 || nombre.length > 60) {
+      res.status(400).json({ error: "El nombre debe tener entre 2 y 60 letras." });
+      return;
+    }
+    cambios["nombre"] = nombre;
+  }
+  if ("telefono" in cuerpo) {
+    const tel = String(cuerpo["telefono"] ?? "").trim();
+    if (tel && !/^[0-9+\-\s()]{6,20}$/.test(tel)) {
+      res.status(400).json({ error: "El tel\xE9fono no tiene una forma v\xE1lida." });
+      return;
+    }
+    cambios["telefono"] = tel || null;
+  }
+  if (Object.keys(cambios).length === 0) {
+    res.status(400).json({ error: "No has pedido ning\xFAn cambio." });
+    return;
+  }
+  const { data: destino } = await servidor.from("perfiles").select("id, rol").eq("id", id).maybeSingle();
+  if (!destino) {
+    res.status(404).json({ error: "Ese usuario no existe." });
+    return;
+  }
+  if (destino.rol === "admin") {
+    res.status(400).json({ error: "La cuenta del administrador no se modifica desde esta pantalla." });
+    return;
+  }
+  const { data: actualizado, error } = await comoElAdmin(req.quien.token).from("perfiles").update(cambios).eq("id", id).select("id, nombre, rol, telefono, activo").maybeSingle();
+  if (error) {
+    logger.warn({ err: error, id }, "la base rechaz\xF3 el cambio de perfil");
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  if (!actualizado) {
+    res.status(403).json({ error: "La base no permiti\xF3 el cambio." });
+    return;
+  }
+  res.json({ usuario: actualizado });
+});
+var admin_usuarios_default = router7;
+
+// src/routes/index.ts
+var router8 = (0, import_express8.Router)();
+router8.use("/rifa", rifa_default);
+router8.use(admin_usuarios_default);
+router8.use(health_default);
+router8.use(admin_auth_default);
+router8.use(products_default);
+router8.use(projects_default);
+router8.use(videos_default);
+var routes_default = router8;
+
 // src/app.ts
 var __dirname2 = path3.dirname(fileURLToPath(import.meta.url));
-var app = (0, import_express8.default)();
+var app = (0, import_express9.default)();
 app.use(
   (0, import_pino_http.default)({
     logger,
@@ -71307,10 +71524,10 @@ app.use(
   })
 );
 app.use((0, import_cors.default)());
-app.use(import_express8.default.json());
-app.use(import_express8.default.urlencoded({ extended: true }));
-app.use("/uploads", import_express8.default.static(path3.resolve(__dirname2, "../uploads")));
-app.use(import_express8.default.static(path3.resolve(__dirname2, "../public")));
+app.use(import_express9.default.json());
+app.use(import_express9.default.urlencoded({ extended: true }));
+app.use("/uploads", import_express9.default.static(path3.resolve(__dirname2, "../uploads")));
+app.use(import_express9.default.static(path3.resolve(__dirname2, "../public")));
 app.use("/api", routes_default);
 app.get("/{*splat}", (_req, res) => {
   res.sendFile(path3.resolve(__dirname2, "../public/index.html"));

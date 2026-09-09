@@ -32,8 +32,8 @@ function origenTrabajoDe(o) { return o?.origenTrabajo === "negocio" ? "negocio" 
 // las contraseñas NO viven aquí porque este archivo se descarga completo con
 // cualquier PWA publicada. Viven en taller-demo/config-local.js (ignorado por
 // Git) — ver claveLocal() más abajo. Sin ese archivo, el login local de estos
-// usuarios queda deshabilitado y solo sirve una sesión ya guardada en este
-// dispositivo.
+// usuarios queda deshabilitado y solo sirve el login por correo (Supabase) o
+// una sesión ya guardada en este dispositivo.
 const TEAM = [
   { user: "wilkin", nombre: "Wilkin", telefono: "97049635", rol: "admin" },
   { user: "mecanico1", nombre: "Mecánico 1", telefono: "", rol: "mecanico" },
@@ -51,7 +51,18 @@ function claveLocal(user) {
 }
 // Secciones que solo el rol "admin" (dueño) puede ver — un mecánico no necesita
 // entrar a la caja, la web o los respaldos para hacer su trabajo diario.
-const VISTAS_SOLO_ADMIN = ["finanzas", "web-cms", "ajustes"];
+const VISTAS_SOLO_ADMIN = ["finanzas", "web-cms", "ajustes", "usuarios"];
+// Qué secciones NO ve cada rol. El admin lo ve todo. El cajero necesita la caja
+// (finanzas) pero no el gestor de la web ni los respaldos.
+// OJO: esto solo esconde botones. Lo que de verdad protege los datos son las
+// políticas RLS del servidor — y todavía no aplican a IndexedDB, que es local.
+const VISTAS_OCULTAS_POR_ROL = {
+  admin: [],
+  cajero: ["web-cms", "ajustes", "usuarios"],
+  mecanico: VISTAS_SOLO_ADMIN,
+  desarrollador: null,   // null = no entra al taller; ver panel-tecnico.html
+};
+const NOMBRE_ROL = { admin: "administrador", cajero: "cajero", mecanico: "mecánico", desarrollador: "desarrollador" };
 
 // Horario del taller para el selector de citas: ajusta estos 3 valores si el
 // taller abre/cierra en otro horario o quieres citas cada X minutos.
@@ -1258,25 +1269,92 @@ function wireInstallGate() {
 function readSession() {
   try { return JSON.parse(localStorage.getItem("enti_session") || "null"); } catch { return null; }
 }
+/* Un correo entra por Supabase; un usuario suelto, por la lista local de
+   siempre. Los dos caminos conviven a propósito: mientras la información viva
+   en el teléfono, el taller tiene que poder entrar sin señal. */
+function pareceCorreo(v) { return /.+@.+\..+/.test(v); }
+
+function sesionDesdePerfil(perfil, correo) {
+  return { user: correo, uid: perfil.uid, nombre: perfil.nombre,
+           telefono: "", rol: perfil.rol, origen: "supabase" };
+}
+
+function pintarModoLogin() {
+  const el = document.getElementById("loginModo");
+  if (!el) return;
+  const hay = window.Auth && Auth.disponible();
+  el.textContent = hay
+    ? (navigator.onLine ? "Conectado al servidor — entra con tu correo." : "Sin señal — solo acceso local.")
+    : "";
+}
+
 function wireLoginGate() {
-  document.getElementById("loginForm").addEventListener("submit", (e) => {
+  pintarModoLogin();
+  window.addEventListener("online", pintarModoLogin);
+  window.addEventListener("offline", pintarModoLogin);
+
+  document.getElementById("loginForm").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const u = document.getElementById("loginUser").value.trim().toLowerCase();
+    const entrada = document.getElementById("loginUser").value.trim();
     const p = document.getElementById("loginPass").value;
+    const errEl = document.getElementById("loginError");
+    const btn = e.target.querySelector('button[type=submit]');
+    errEl.textContent = "";
+
+    // ── camino Supabase ──
+    if (pareceCorreo(entrada) && window.Auth && Auth.disponible()) {
+      btn.disabled = true; btn.textContent = "Entrando…";
+      const r = await Auth.iniciarSesion(entrada.toLowerCase(), p);
+      btn.disabled = false; btn.textContent = "Entrar";
+      document.getElementById("loginPass").value = "";   // la contraseña no se queda en el DOM
+      if (!r.ok) {
+        errEl.textContent =
+          r.motivo === "credenciales-invalidas" ? "Correo o contraseña incorrectos." :
+          r.motivo === "cuenta-desactivada"     ? "Esta cuenta está dada de baja. Habla con el administrador." :
+          r.motivo === "sin-perfil"             ? "La cuenta existe pero no tiene perfil asignado." :
+          r.motivo === "sin-conexion"           ? "Sin conexión con el servidor. Entra con tu usuario local." :
+                                                  "No se pudo entrar. Inténtalo de nuevo.";
+        return;
+      }
+      entrarConSesion(sesionDesdePerfil(r.datos, entrada.toLowerCase()));
+      return;
+    }
+
+    // ── camino local (sin red, o usuario del equipo sin correo) ──
+    const u = entrada.toLowerCase();
     const miembro = TEAM.find(t => t.user === u);
     const clave = miembro && claveLocal(miembro.user);
     const found = miembro && typeof clave === "string" && clave === p ? miembro : null;
-    const errEl = document.getElementById("loginError");
-    if (!found) { errEl.textContent = "Usuario o contraseña incorrectos."; return; }
-    errEl.textContent = "";
+    if (!found) {
+      errEl.textContent = pareceCorreo(entrada) && !navigator.onLine
+        ? "Sin conexión: para entrar con correo hace falta señal."
+        : "Usuario o contraseña incorrectos.";
+      return;
+    }
     document.getElementById("loginPass").value = "";
-    const session = { user: found.user, nombre: found.nombre, telefono: found.telefono, rol: found.rol };
-    localStorage.setItem("enti_session", JSON.stringify(session));
-    document.getElementById("gateLogin").classList.remove("active");
-    startApp(session);
+    entrarConSesion({ user: found.user, nombre: found.nombre, telefono: found.telefono,
+                      rol: found.rol, origen: "local" });
   });
 }
-document.getElementById("btnLogout").addEventListener("click", () => {
+
+/* El desarrollador no entra al taller: mientras los datos vivan en IndexedDB,
+   RLS no puede protegerlos, y su rol existe precisamente para no verlos. */
+function entrarConSesion(session) {
+  if (session.rol === "desarrollador") {
+    const errEl = document.getElementById("loginError");
+    errEl.innerHTML = 'Cuenta técnica: no abre el taller. Usa el ' +
+                      '<a href="panel-tecnico.html" style="text-decoration:underline;">panel técnico</a>.';
+    if (window.Auth) Auth.cerrarSesion();
+    return;
+  }
+  localStorage.setItem("enti_session", JSON.stringify(session));
+  document.getElementById("gateLogin").classList.remove("active");
+  startApp(session);
+}
+document.getElementById("btnLogout").addEventListener("click", async () => {
+  // Cerrar sesión NO borra nada del taller: ni clientes, ni inventario, ni
+  // órdenes, ni la configuración. Solo se va la sesión.
+  if (window.Auth && Auth.estado().conSesion) { try { await Auth.cerrarSesion(); } catch (e) {} }
   localStorage.removeItem("enti_session");
   location.reload();
 });
@@ -1485,6 +1563,8 @@ const renderByView = {
   creditos: () => renderCreditos(),
   "web-cms": () => renderWebCMS(),
   ajustes: () => renderAjustes(),
+  // vive en usuarios.js: habla con el api-server, no con IndexedDB
+  usuarios: () => window.PantallaUsuarios?.render(),
 };
 document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -5440,13 +5520,15 @@ document.getElementById("btnGuardarCMS").addEventListener("click", async () => {
 
 /* ================= AJUSTES: respaldo, restauración, reset, permisos ================= */
 function aplicarPermisosPorRol() {
-  const esAdmin = currentUser?.rol === "admin";
+  const rol = currentUser?.rol || "mecanico";
+  const ocultas = VISTAS_OCULTAS_POR_ROL[rol] || VISTAS_SOLO_ADMIN;
   document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
-    if (VISTAS_SOLO_ADMIN.includes(btn.dataset.view)) btn.style.display = esAdmin ? "" : "none";
+    if (ocultas.includes(btn.dataset.view)) btn.style.display = "none";
+    else if (VISTAS_SOLO_ADMIN.includes(btn.dataset.view)) btn.style.display = "";
   });
   // si un mecánico quedó parado en una vista restringida (por ejemplo, sesión
   // anterior era de admin en este mismo dispositivo), lo regresamos al dashboard
-  if (!esAdmin && VISTAS_SOLO_ADMIN.some(v => document.getElementById(`view-${v}`)?.classList.contains("active"))) {
+  if (ocultas.some(v => document.getElementById(`view-${v}`)?.classList.contains("active"))) {
     showView("dashboard");
     renderDashboard();
   }
@@ -5457,7 +5539,7 @@ async function renderAjustes() {
   const conteos = await Promise.all(ALL_STORES.map(s => DB.getAll(s).then(r => r.length)));
   const totalRegistros = conteos.reduce((a, b) => a + b, 0);
   document.getElementById("ajustesInfo").innerHTML = `
-    Usuario: <b>${esc(currentUser?.nombre || "—")}</b> (${currentUser?.rol === "admin" ? "administrador" : "mecánico"})<br>
+    Usuario: <b>${esc(currentUser?.nombre || "—")}</b> (${NOMBRE_ROL[currentUser?.rol] || currentUser?.rol || "—"})<br>
     Este dispositivo arrancó ${modo} · ${totalRegistros} registros guardados en total.
   `;
 
@@ -5982,7 +6064,8 @@ async function seedIfEmpty() {
 async function startApp(session) {
   currentUser = session;
   document.getElementById("loggedUserName").textContent = session.nombre;
-  document.getElementById("loggedUserRole").textContent = session.user;
+  document.getElementById("loggedUserRole").textContent =
+    (NOMBRE_ROL[session.rol] || session.rol || "") + (session.origen === "supabase" ? "" : " · local");
 
   db = await openDb();
 
@@ -6147,18 +6230,83 @@ alHacerClicUnaVez(document.getElementById("btnCopiaYActualizar"), async () => {
 });
 
 /* ================= boot: gate de instalación -> gate de login -> app ================= */
+function global_RecuperarClave() { return typeof RecuperarClave !== "undefined" && !!RecuperarClave; }
+
 (function boot() {
+  /* Primero de todo: ¿venimos de un enlace de Supabase? Quien lo abre es
+     alguien recién dado de alta, que todavía NO tiene la app instalada — si
+     esto fuera después, chocaría contra la pantalla de instalar y no habría
+     forma de poner la contraseña. Ver recovery.js. */
+  if (global_RecuperarClave() && RecuperarClave.hayEnlace()) {
+    if (RecuperarClave.iniciar()) return;
+  }
+
   if (!isStandalone() && !devBypassed()) {
     wireInstallGate();
     return; // se queda mostrando #gateInstall (ya viene "active" en el HTML)
   }
   document.getElementById("gateInstall").classList.remove("active");
 
-  const session = readSession();
-  if (!session) {
+  arrancarConSesion();
+})();
+
+/* Al abrir la app: si había sesión de Supabase se confirma contra el servidor,
+   porque el rol puede haber cambiado desde el último inicio. Si no hay red, se
+   sigue con lo que había guardado — el taller no se queda fuera por falta de
+   señal. */
+async function arrancarConSesion() {
+  const guardada = readSession();
+
+  if (window.Auth && Auth.disponible()) {
+    const r = await Auth.restaurarSesion();
+    if (r.ok) {
+      // el perfil manda sobre lo que hubiera guardado: nombre y rol al día
+      const correo = (Auth.usuarioActual() || {}).correo || (guardada && guardada.user) || "";
+      const sesion = sesionDesdePerfil(r.datos, correo);
+      if (sesion.rol === "desarrollador") {
+        wireLoginGate();
+        document.getElementById("gateLogin").classList.add("active");
+        document.getElementById("loginError").innerHTML =
+          'Cuenta técnica: no abre el taller. Usa el <a href="panel-tecnico.html" style="text-decoration:underline;">panel técnico</a>.';
+        await Auth.cerrarSesion();
+        localStorage.removeItem("enti_session");
+        return;
+      }
+      localStorage.setItem("enti_session", JSON.stringify(sesion));
+      startApp(sesion);
+      return;
+    }
+    // la sesión del servidor ya no vale: si la guardada venía de ahí, se descarta
+    if (guardada && guardada.origen === "supabase" &&
+        ["cuenta-desactivada", "sin-perfil", "sin-permiso"].includes(r.motivo)) {
+      localStorage.removeItem("enti_session");
+      wireLoginGate();
+      document.getElementById("gateLogin").classList.add("active");
+      document.getElementById("loginError").textContent =
+        r.motivo === "cuenta-desactivada" ? "Esta cuenta está dada de baja."
+                                          : "Esta cuenta ya no tiene perfil válido.";
+      return;
+    }
+  }
+
+  if (!guardada) {
     wireLoginGate();
     document.getElementById("gateLogin").classList.add("active");
     return;
   }
-  startApp(session);
-})();
+  startApp(guardada);
+}
+
+/* Si el servidor deja caer la sesión mientras se trabaja (token caducado que no
+   se pudo renovar), se vuelve al login. No se toca ni un dato local. */
+if (window.Auth) {
+  Auth.alCambiar((evento) => {
+    if (evento !== "SIGNED_OUT") return;
+    const g = readSession();
+    if (g && g.origen === "supabase" && document.getElementById("shell")?.classList.contains("active")) {
+      localStorage.removeItem("enti_session");
+      toast("Tu sesión ha caducado. Vuelve a entrar.", "off");
+      setTimeout(() => location.reload(), 2500);
+    }
+  });
+}

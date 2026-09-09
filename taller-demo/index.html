@@ -955,14 +955,25 @@
     <img src="icons/icon-192.png" alt="ENTIMOTORS">
     <h1>Iniciar sesión</h1>
     <p class="desc">Acceso solo para el equipo de ENTIMOTORS.</p>
+    <p class="desc" id="loginModo" style="font-size:.8rem;opacity:.75;margin-top:-.4rem;"></p>
     <form id="loginForm">
-      <label>Usuario</label>
-      <input type="text" id="loginUser" autocomplete="username" placeholder="ej. wilkin">
+      <label>Correo o usuario</label>
+      <input type="text" id="loginUser" autocomplete="username" placeholder="correo@entimotors.hn">
       <label>Contraseña</label>
       <input type="password" id="loginPass" autocomplete="current-password">
       <p class="gate-error" id="loginError"></p>
       <button class="btn primary" type="submit" style="width:100%;">Entrar</button>
     </form>
+  </div>
+</div>
+
+<!-- GATE R: establecer contraseña (solo al llegar por un enlace de Supabase) -->
+<div class="gate" id="gateRecovery">
+  <div class="gate-card">
+    <img src="icons/icon-192.png" alt="ENTIMOTORS">
+    <h1>Establecer contraseña</h1>
+    <p class="desc">Has sido invitado a ENTIMOTORS OS. Crea tu contraseña para activar tu acceso.</p>
+    <div id="rcvCuerpo"></div>
   </div>
 </div>
 
@@ -1035,6 +1046,7 @@
     <button class="nav-item disabled" title="Se administra hoy desde admin.html — se integra en una siguiente etapa"><span class="sw"></span>Trabajos</button>
     <button class="nav-item disabled" title="Se administra hoy desde admin.html — se integra en una siguiente etapa"><span class="sw"></span>Videos</button>
     <div class="nav-grp">Sistema</div>
+    <button class="nav-item" data-view="usuarios"><span class="sw"></span>Usuarios y equipo</button>
     <button class="nav-item" data-view="ajustes"><span class="sw"></span>Ajustes</button>
   </div>
 
@@ -1425,6 +1437,14 @@
         <div><h3 style="font-family:'Teko',sans-serif; text-transform:uppercase; font-size:1.2rem;">Citas agendadas desde la web</h3></div>
       </div>
       <div id="citasWebList"></div>
+    </section>
+
+    <!-- USUARIOS Y EQUIPO — solo administrador; el servidor lo comprueba aparte -->
+    <section class="view" id="view-usuarios">
+      <div class="view-head">
+        <div><h2>Usuarios y equipo</h2><p>Quién entra al sistema y qué puede hacer. Los permisos los aplica el servidor, no esta pantalla.</p></div>
+      </div>
+      <div id="usuariosCuerpo"></div>
     </section>
 
     <!-- AJUSTES -->
@@ -2312,11 +2332,21 @@
 <!-- config-local.js es opcional (ignorado por Git): sin él, el login local de
      TEAM y el código de administrador quedan deshabilitados, pero el resto de
      la app sigue funcionando igual. Ver config-local.example.js. -->
+<!-- Capa de Supabase. Si supabase-config.js no existe o está sin rellenar, los
+     cuatro se cargan igual y no hacen nada: la app sigue funcionando entera con
+     IndexedDB, como hasta ahora. -->
+<script src="supabase-config.js?v=3.12.2"></script>
+<script src="supabase-client.js?v=3.12.2"></script>
+<script src="auth.js?v=3.12.2"></script>
+<script src="recovery.js?v=3.12.2"></script>
 <script src="config-local.js?v=3.12.2"></script>
 <!-- el ?v= debe cambiar cada vez que se toque app.js (junto con CACHE_NAME en
      sw.js) — es la forma más universal de forzar que CUALQUIER navegador
      pida el archivo de nuevo aunque ya tenga guardada una copia vieja en su
      propio caché HTTP, sin depender de que respete el Service Worker. -->
 <script src="app.js?v=3.12.2"></script>
+<!-- Pantalla «Usuarios y equipo»: habla con el api-server, no con IndexedDB.
+     Va después de app.js porque solo se invoca al abrir esa vista. -->
+<script src="usuarios.js?v=3.12.2"></script>
 </body>
 </html>

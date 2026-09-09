@@ -5,6 +5,7 @@ import projectsRouter from "./projects.js";
 import videosRouter from "./videos.js";
 import adminAuthRouter from "./admin-auth.js";
 import rifaRouter from "./rifa.js"; // <-- Importamos la rifa
+import adminUsuariosRouter from "./admin-usuarios.js";
 
 const router: IRouter = Router();
 
@@ -14,6 +15,10 @@ const router: IRouter = Router();
 router.use("/rifa", rifaRouter);
 
 // El resto de tus rutas originales
+// Gestión del equipo del taller. Autoriza por token de Supabase, no por
+// contraseña compartida: ver admin-usuarios.ts.
+router.use(adminUsuariosRouter);
+
 router.use(healthRouter);
 router.use(adminAuthRouter);
 router.use(productsRouter);
