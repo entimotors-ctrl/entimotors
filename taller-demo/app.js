@@ -444,7 +444,7 @@ function registrarVentaRapida({ items, clienteId, clienteNombre, metodoPago, efe
       items, clienteId: clienteId || null, clienteNombre: clienteNombre || null, metodoPago, total,
       efectivoRecibido: metodoPago === "efectivo" ? Number(efectivoRecibido) || 0 : null,
       cambio: metodoPago === "efectivo" ? Math.max(0, (Number(efectivoRecibido) || 0) - total) : 0,
-      fechaISO, creadoEn: Date.now(), mecanico: currentUser?.nombre || "",
+      fechaISO, creadoEn: Date.now(), ...asignacionDelUsuarioActual(),
     };
 
     const ventaReq = ventasStore.add(venta);
@@ -506,7 +506,7 @@ function registrarCredito({ clienteId, clienteNombre, clienteTelefono, items, ve
       clienteId: clienteId || null, clienteNombre, clienteTelefono: clienteTelefono || "",
       items, total, abonado: 0, saldo: total, estado: "pendiente",
       vencimiento: vencimiento || null, nota: nota || "",
-      historialAbonos: [], fechaISO, creadoEn: Date.now(), mecanico: currentUser?.nombre || "",
+      historialAbonos: [], fechaISO, creadoEn: Date.now(), ...asignacionDelUsuarioActual(),
     };
     const credReq = credStore.add(credito);
     credReq.onsuccess = () => { credId = credReq.result; };
@@ -1275,8 +1275,12 @@ function readSession() {
 function pareceCorreo(v) { return /.+@.+\..+/.test(v); }
 
 function sesionDesdePerfil(perfil, correo) {
-  return { user: correo, uid: perfil.uid, nombre: perfil.nombre,
-           telefono: "", rol: perfil.rol, origen: "supabase" };
+  // perfilId es el identificador ESTABLE de la persona (perfiles.id en
+  // Supabase). Es lo que se guarda en las citas y órdenes que crea, para que
+  // el trabajo siga siendo suyo aunque cambie de nombre. En una sesión local
+  // (lista TEAM, sin cuenta) vale null, y eso es válido: ver identidadMecanico().
+  return { user: correo, uid: perfil.uid, perfilId: perfil.uid || perfil.id || null,
+           nombre: perfil.nombre, telefono: "", rol: perfil.rol, origen: "supabase" };
 }
 
 function pintarModoLogin() {
@@ -1381,12 +1385,34 @@ document.getElementById("btnTema").addEventListener("click", () => {
 actualizarBotonTema();
 
 /* ================= navegación entre vistas ================= */
+/* Qué vistas puede abrir un rol. Hasta ahora los permisos solo escondían el
+   botón del menú, así que showView("finanzas") desde la consola —o cualquier
+   código que se equivocara de destino— abría la sección igual. Esto lo cierra.
+
+   OJO, y es importante: esto es una defensa de la interfaz, NO seguridad de
+   los datos. Todo lo que se ve vive en IndexedDB, en el propio teléfono, y ahí
+   no hay nada que impida leerlo por otros medios. La barrera de verdad son las
+   políticas RLS del servidor, que todavía no distinguen entre miembros del
+   equipo (ver informe de Fase 4A). Esto evita el acceso accidental y el
+   "me equivoqué de botón"; no evita a alguien decidido con su propio dispositivo. */
+function puedeVerVista(name) {
+  if (!currentUser) return true;              // durante el arranque no hay rol todavía
+  const ocultas = VISTAS_OCULTAS_POR_ROL[currentUser.rol];
+  if (ocultas === null) return false;         // desarrollador: no entra al taller
+  return !(ocultas || VISTAS_SOLO_ADMIN).includes(name);
+}
+
 function showView(name) {
+  if (!puedeVerVista(name)) {
+    toast("No tienes acceso a esa sección", "off");
+    return false;   // quien despacha no debe renderizar la vista tampoco
+  }
   document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
   document.getElementById(`view-${name}`).classList.add("active");
   document.querySelectorAll(".nav-item[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === name));
   document.getElementById("fabHome").classList.toggle("fab-hidden", name === "dashboard");
   closeMobileSidebar();
+  return true;
 }
 
 document.getElementById("fabHome").addEventListener("click", () => {
@@ -1568,8 +1594,7 @@ const renderByView = {
 };
 document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
   btn.addEventListener("click", () => {
-    showView(btn.dataset.view);
-    renderByView[btn.dataset.view]?.();
+    if (showView(btn.dataset.view)) renderByView[btn.dataset.view]?.();
   });
 });
 
@@ -1577,8 +1602,7 @@ document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
 // menú hamburguesa, mismo despacho de render.
 document.querySelectorAll(".qa-btn[data-view]").forEach(btn => {
   btn.addEventListener("click", () => {
-    showView(btn.dataset.view);
-    renderByView[btn.dataset.view]?.();
+    if (showView(btn.dataset.view)) renderByView[btn.dataset.view]?.();
   });
 });
 
@@ -1597,7 +1621,7 @@ function renderWidgetRow(containerId, items) {
     const item = items[i];
     if (item.goto) {
       btn.addEventListener("click", () => {
-        showView(item.goto);
+        if (!showView(item.goto)) return;
         document.querySelectorAll(".nav-item[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === item.goto));
         renderByView[item.goto]?.();
       });
@@ -1883,10 +1907,13 @@ function renderDetalleMecanico(o) {
     · <select id="detalleOrigenSel" style="display:inline-block; width:auto; padding:0.1rem 0.4rem; margin:0;">
         <option value="taller">Taller</option><option value="negocio">Negocio</option>
       </select>`;
-  poblarSelectMecanico("detalleMecanicoSel", o.mecanico);
+  poblarSelectMecanico("detalleMecanicoSel", o.mecanico, o.mecanicoId);
   document.getElementById("detalleOrigenSel").value = origenTrabajoDe(o);
   document.getElementById("detalleMecanicoSel").addEventListener("change", async (e) => {
-    await updateOrder(o.id, ord => { ord.mecanico = e.target.value || ""; });
+    await updateOrder(o.id, ord => {
+      const a = asignacionDesdeSelect("detalleMecanicoSel");
+      ord.mecanico = a.mecanico; ord.mecanicoId = a.mecanicoId;
+    });
     toast("Mecánico actualizado");
     renderOrdersList();
   });
@@ -2246,9 +2273,49 @@ let citaPendienteDeConvertir = null;
 
 // "" = sin asignar. Los registros viejos con mecánico:"—" se tratan igual que
 // "" en cualquier cálculo/agrupación (ver origenTrabajoDe y calcularProduccion).
-function poblarSelectMecanico(selectId, seleccionado) {
+/* ── identidad del mecánico ────────────────────────────────────────────────
+   Un registro puede identificar a quien lo atiende de dos maneras:
+
+     mecanicoId  uuid del perfil — estable, sobrevive a un cambio de nombre
+     mecanico    el nombre visible — lo único que hay en los registros viejos,
+                 en los creados sin conexión y en los trabajadores sin cuenta
+
+   Las dos conviven a propósito y ninguna sustituye a la otra: el id sirve para
+   agrupar y para que mañana RLS pueda decir «esto es tuyo»; el nombre es lo
+   que se enseña, y es lo que queda cuando no hay id. Todo el resto del código
+   pasa por estas tres funciones para no repetir la regla en quince sitios. */
+
+/** Clave con la que se agrupa a una persona. Prefiere el id; si no hay, el nombre. */
+function identidadMecanico(registro) {
+  const id = registro?.mecanicoId || null;
+  const nombre = (registro?.mecanico && registro.mecanico !== "—") ? registro.mecanico : "";
+  return { id, nombre, clave: id || nombre || "(sin asignar)" };
+}
+
+/** Lo que hay que guardar cuando alguien elige un mecánico en un <select>. */
+function asignacionDesdeSelect(selectId) {
   const sel = document.getElementById(selectId);
-  sel.innerHTML = '<option value="">Sin asignar</option>' + TEAM.map(t => `<option value="${esc(t.nombre)}">${esc(t.nombre)}</option>`).join("");
+  const op = sel?.selectedOptions?.[0];
+  return { mecanico: sel?.value || "", mecanicoId: op?.dataset?.perfilId || null };
+}
+
+/** La asignación del usuario que está trabajando ahora mismo. */
+function asignacionDelUsuarioActual() {
+  return { mecanico: currentUser?.nombre || "", mecanicoId: currentUser?.perfilId || null };
+}
+
+/* El <option> sigue valiendo el NOMBRE: los huecos de horario, el aviso de
+   choque y "Mover" comparan por nombre y seguirían funcionando igual. El uuid
+   viaja aparte en data-perfil-id, así que cuando la lista pase a venir de
+   `perfiles` (4C-2) solo cambia de dónde salen las opciones, no quién las lee. */
+function poblarSelectMecanico(selectId, seleccionado, seleccionadoId) {
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '<option value="">Sin asignar</option>' + TEAM.map(t =>
+    `<option value="${esc(t.nombre)}"${t.perfilId ? ` data-perfil-id="${esc(t.perfilId)}"` : ""}>${esc(t.nombre)}</option>`).join("");
+  if (seleccionadoId) {
+    const porId = [...sel.options].find(o => o.dataset.perfilId === seleccionadoId);
+    if (porId) { sel.value = porId.value; return; }
+  }
   sel.value = seleccionado && TEAM.some(t => t.nombre === seleccionado) ? seleccionado : "";
 }
 
@@ -2283,7 +2350,7 @@ async function abrirOrdenDesdeCita(citaId) {
   }
   document.getElementById("ordenFalla").value = cita.motivo || "";
   renderOrdenClienteChip();
-  poblarSelectMecanico("ordenMecanico", cita.mecanico);
+  poblarSelectMecanico("ordenMecanico", cita.mecanico, cita.mecanicoId);
   document.getElementById("ordenOrigenTrabajo").value = "taller";
 
   document.getElementById("ordenDesdeCitaAviso").style.display = "block";
@@ -2300,7 +2367,7 @@ document.getElementById("btnNuevaOrden").addEventListener("click", async () => {
   renderOrdenClienteChip();
   ["ordenNombre", "ordenTelefono", "ordenPlaca", "ordenMarca", "ordenModelo", "ordenKm", "ordenFalla"].forEach(id => document.getElementById(id).value = "");
   document.getElementById("ordenFoto").value = "";
-  poblarSelectMecanico("ordenMecanico", currentUser?.nombre);
+  poblarSelectMecanico("ordenMecanico", currentUser?.nombre, currentUser?.perfilId);
   document.getElementById("ordenOrigenTrabajo").value = "taller";
   document.getElementById("modalOrden").classList.add("active");
 });
@@ -2358,7 +2425,7 @@ alHacerClicUnaVez(document.getElementById("btnCrearOrden"), async () => {
     diagnostico: null, reparacionNotas: "", calidadChecklist: null,
     // "" = sin asignar. El select ya viene precargado con el mecánico de la
     // cita (si aplica) o el usuario actual — esto solo lee lo que haya quedado.
-    mecanico: document.getElementById("ordenMecanico").value || "",
+    ...asignacionDesdeSelect("ordenMecanico"),
     origenTrabajo: document.getElementById("ordenOrigenTrabajo").value === "negocio" ? "negocio" : "taller",
     citaId: cita?.id || null,
     citaFechaISO: cita ? `${cita.fecha}T${cita.hora}` : null,
@@ -3279,8 +3346,7 @@ async function abrirModalMoverCita(citaId) {
     `${nombre} — ahora está para el ${dt.toLocaleDateString("es-HN")} a las ${cita.hora} con ${cita.mecanico}.`;
   document.getElementById("moverAvisoSinTel").style.display = telefono ? "none" : "block";
 
-  document.getElementById("moverMecanico").innerHTML = TEAM.map(t => `<option value="${esc(t.nombre)}">${esc(t.nombre)}</option>`).join("");
-  document.getElementById("moverMecanico").value = cita.mecanico;
+  poblarSelectMecanico("moverMecanico", cita.mecanico, cita.mecanicoId);
   document.getElementById("moverMotivo").value = "cliente";
   document.getElementById("moverFecha").value = cita.fecha;
   await refreshMoverHoraOptions();
@@ -3308,7 +3374,7 @@ alHacerClicUnaVez(document.getElementById("btnConfirmarMover"), async () => {
 
   const fecha = document.getElementById("moverFecha").value;
   const hora = document.getElementById("moverHora").value;
-  const mecanico = document.getElementById("moverMecanico").value;
+  const { mecanico, mecanicoId } = asignacionDesdeSelect("moverMecanico");
   const motivo = document.getElementById("moverMotivo").value;
 
   if (!fecha) { toast("Elige la nueva fecha", "off"); return; }
@@ -3333,6 +3399,8 @@ alHacerClicUnaVez(document.getElementById("btnConfirmarMover"), async () => {
   const antes = { fecha: cita.fecha, hora: cita.hora, mecanico: cita.mecanico };
   await DB.save("citas", {
     ...cita, fecha, hora, mecanico,
+    // igual que al editar: sin cambio de mecánico, el id que ya tenía manda
+    mecanicoId: mecanico === cita.mecanico ? (cita.mecanicoId ?? null) : mecanicoId,
     // si estaba marcada como no asistida, moverla la vuelve a poner en juego
     estado: cita.estado === "ausente" ? undefined : cita.estado,
     cerradaEn: cita.estado === "ausente" ? undefined : cita.cerradaEn,
@@ -3598,7 +3666,7 @@ async function abrirModalEditarCita(citaId) {
   campoFecha.min = cita.fecha < hoy ? cita.fecha : hoy;
   campoFecha.value = cita.fecha;
 
-  document.getElementById("citaMecanico").value = cita.mecanico;
+  poblarSelectMecanico("citaMecanico", cita.mecanico, cita.mecanicoId);
   await refreshCitaHoraOptions();
   const selHora = document.getElementById("citaHora");
   // si la hora actual no es uno de los huecos estándar (típico de las citas que
@@ -3633,7 +3701,7 @@ wireAutocompleteCliente(document.getElementById("citaBuscarCliente"), document.g
 document.getElementById("citaBuscarCliente").addEventListener("input", () => { citaClienteSel = null; renderCitaClienteChip(); });
 
 async function refreshCitaClienteSelect() {
-  document.getElementById("citaMecanico").innerHTML = TEAM.map(t => `<option value="${esc(t.nombre)}">${esc(t.nombre)}</option>`).join("");
+  poblarSelectMecanico("citaMecanico");
 }
 
 document.getElementById("btnNuevaCita").addEventListener("click", async () => {
@@ -3658,7 +3726,7 @@ alHacerClicUnaVez(document.getElementById("btnGuardarCita"), async () => {
   const fecha = document.getElementById("citaFecha").value;
   const hora = document.getElementById("citaHora").value;
   const motivo = document.getElementById("citaMotivo").value.trim();
-  const mecanico = document.getElementById("citaMecanico").value;
+  const { mecanico, mecanicoId } = asignacionDesdeSelect("citaMecanico");
   if (!fecha) { toast("Elige una fecha", "off"); return; }
   if (!hora) { toast("Elige una hora disponible", "off"); return; }
 
@@ -3706,11 +3774,14 @@ alHacerClicUnaVez(document.getElementById("btnGuardarCita"), async () => {
     const cambioDeHorario = citaPrevia.fecha !== fecha || citaPrevia.hora !== hora;
     await DB.save("citas", {
       ...citaPrevia, clienteId, nombreTmp, telefonoTmp, fecha, hora, motivo, mecanico,
+      /* Si el mecánico no cambió, se respeta el id que ya tuviera: editar el
+         motivo de una cita no puede desasignarla ni inventarle un uuid. */
+      mecanicoId: mecanico === citaPrevia.mecanico ? (citaPrevia.mecanicoId ?? null) : mecanicoId,
       // si se corrió la cita, el recordatorio anterior ya no sirve
       recordatorioEnviado: cambioDeHorario ? false : citaPrevia.recordatorioEnviado,
     });
   } else {
-    id = await DB.save("citas", { clienteId, nombreTmp, telefonoTmp, fecha, hora, motivo, mecanico, origen: "interna", recordatorioEnviado: false, creadoEn: Date.now() });
+    id = await DB.save("citas", { clienteId, nombreTmp, telefonoTmp, fecha, hora, motivo, mecanico, mecanicoId, origen: "interna", recordatorioEnviado: false, creadoEn: Date.now() });
   }
   markDirty();
   document.getElementById("modalCita").classList.remove("active");
@@ -4778,7 +4849,9 @@ async function calcularProduccion(desde, hasta) {
   const [ordenes, ventas, creditos] = await Promise.all([DB.getAll("ordenes"), DB.getAll("ventas_rapidas"), DB.getAll("creditos")]);
   const enRango = (iso) => { const d = (iso || "").slice(0, 10); return !!d && d >= desde && d <= hasta; };
   const totalItems = (x) => (x.items || []).reduce((s, it) => s + it.cantidad * it.precio, 0);
-  const nombreMecanico = (o) => (o.mecanico && o.mecanico !== "—") ? o.mecanico : "";
+  // se agrupa por identidadMecanico(): por uuid cuando lo hay, y si no por
+  // nombre. Así dos tocayos con cuenta propia dejan de sumar en la misma fila,
+  // y los registros viejos (sin uuid) siguen contando como siempre.
 
   const finalizadasEnRango = ordenes.filter(o => o.finalizada && enRango(o.finalizadoEn ? new Date(o.finalizadoEn).toISOString() : null));
   const ordenesTaller = finalizadasEnRango.filter(o => origenTrabajoDe(o) === "taller");
@@ -4798,19 +4871,22 @@ async function calcularProduccion(desde, hasta) {
   // mecánico, aunque ventas_rapidas tenga su propio campo "mecanico" (quien
   // hizo la venta en el TPV, no producción de taller — así lo pidió el cliente).
   const porMecanico = {};
-  const asegurar = (nombre) => {
-    const k = nombre || "(sin asignar)";
-    if (!porMecanico[k]) porMecanico[k] = { pendientes: 0, completados: 0, producido: 0 };
-    return porMecanico[k];
+  const asegurar = (o) => {
+    const { id, nombre, clave } = identidadMecanico(o);
+    if (!porMecanico[clave]) porMecanico[clave] = { mecanicoId: id, nombre: nombre || "(sin asignar)", pendientes: 0, completados: 0, producido: 0 };
+    // si una orden del mismo uuid trae un nombre más reciente, se prefiere ese:
+    // la etiqueta que se enseña es siempre humana, nunca el uuid
+    else if (id && nombre) porMecanico[clave].nombre = nombre;
+    return porMecanico[clave];
   };
-  ordenesTaller.forEach(o => { const e = asegurar(nombreMecanico(o)); e.completados++; e.producido += totalItems(o); });
+  ordenesTaller.forEach(o => { const e = asegurar(o); e.completados++; e.producido += totalItems(o); });
   // "pendientes" es una foto del estado ACTUAL, no depende del rango de fechas
-  ordenes.filter(o => origenTrabajoDe(o) === "taller" && !o.finalizada).forEach(o => { asegurar(nombreMecanico(o)).pendientes++; });
+  ordenes.filter(o => origenTrabajoDe(o) === "taller" && !o.finalizada).forEach(o => { asegurar(o).pendientes++; });
 
   return {
     taller, negocio, negocioOrdenes, negocioVentas, total,
-    porMecanico: Object.entries(porMecanico).map(([nombre, v]) => ({
-      nombre, ...v, promedio: v.completados ? v.producido / v.completados : 0,
+    porMecanico: Object.values(porMecanico).map(v => ({
+      ...v, promedio: v.completados ? v.producido / v.completados : 0,
     })).sort((a, b) => b.producido - a.producido),
   };
 }
