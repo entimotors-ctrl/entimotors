@@ -1031,6 +1031,7 @@
   <div id="sidebarBackdrop"></div>
   <div id="sidebar">
     <div class="nav-grp">Taller</div>
+    <button class="nav-item" data-view="mi-trabajo"><span class="sw"></span>Mi trabajo</button>
     <button class="nav-item active" data-view="dashboard"><span class="sw"></span>Página principal</button>
     <button class="nav-item" data-view="pos"><span class="sw"></span>Venta rápida (TPV)</button>
     <button class="nav-item" data-view="ordenes"><span class="sw"></span>Órdenes de servicio</button>
@@ -1053,6 +1054,17 @@
   <div id="main">
 
     <!-- DASHBOARD -->
+    <section class="view" id="view-mi-trabajo">
+      <h2 class="font-display" style="margin-bottom:0.2rem;">Mi trabajo</h2>
+      <p style="color:var(--text-muted); margin:0 0 1rem;" id="miTrabajoSub">Lo que tienes asignado.</p>
+      <h3 class="font-display" style="font-size:0.95rem; margin:0 0 0.5rem;">Mis citas</h3>
+      <div id="miTrabajoCitas"></div>
+      <h3 class="font-display" style="font-size:0.95rem; margin:1.2rem 0 0.5rem;">Mis órdenes abiertas</h3>
+      <div id="miTrabajoOrdenes"></div>
+      <h3 class="font-display" style="font-size:0.95rem; margin:1.2rem 0 0.5rem;">Entregadas</h3>
+      <div id="miTrabajoHistorial"></div>
+    </section>
+
     <section class="view active" id="view-dashboard">
       <div class="view-head">
         <div>

@@ -56,12 +56,73 @@ const VISTAS_SOLO_ADMIN = ["finanzas", "web-cms", "ajustes", "usuarios"];
 // (finanzas) pero no el gestor de la web ni los respaldos.
 // OJO: esto solo esconde botones. Lo que de verdad protege los datos son las
 // políticas RLS del servidor — y todavía no aplican a IndexedDB, que es local.
+// Todo lo que NO es Mi Trabajo. Un mecánico con cuenta no entra a ninguna:
+// ni al POS ni a créditos, que hasta 4E-1 tenía abiertos de par en par.
+const VISTAS_FUERA_DEL_MECANICO = [
+  "dashboard", "citas", "ordenes", "clientes", "cotizaciones",
+  "inventario", "pos", "creditos", "finanzas", "web-cms", "ajustes", "usuarios",
+];
 const VISTAS_OCULTAS_POR_ROL = {
-  admin: [],
-  cajero: ["web-cms", "ajustes", "usuarios"],
-  mecanico: VISTAS_SOLO_ADMIN,
+  admin: ["mi-trabajo"],
+  cajero: ["web-cms", "ajustes", "usuarios", "mi-trabajo"],
+  // Las cuentas locales de la lista TEAM siguen con lo de siempre; a quien
+  // entra con cuenta real se le aplica VISTAS_FUERA_DEL_MECANICO (ver
+  // vistasOcultasParaSesion). Este valor es el del modo local histórico.
+  mecanico: VISTAS_SOLO_ADMIN.concat("mi-trabajo"),
   desarrollador: null,   // null = no entra al taller; ver panel-tecnico.html
 };
+
+function vistasOcultasParaSesion() {
+  if (esMecanicoCuenta()) return VISTAS_FUERA_DEL_MECANICO;
+  return VISTAS_OCULTAS_POR_ROL[currentUser?.rol] ?? VISTAS_SOLO_ADMIN.concat("mi-trabajo");
+}
+function vistaInicial() { return esMecanicoCuenta() ? "mi-trabajo" : "dashboard"; }
+/* ── Quién es quién, y qué es suyo ─────────────────────────────────────────
+   Un solo sitio donde se decide, para que no haya quince criterios distintos
+   repartidos por el archivo.
+
+   OJO con esMecanicoCuenta(): es "mecánico CON cuenta de verdad", no "rol
+   mecánico". La diferencia importa. Las cuentas de la lista TEAM local no
+   tienen perfilId, nunca lo tuvieron y siguen funcionando como siempre: son el
+   modo local de un solo dispositivo, anterior a todo esto. Las restricciones
+   de Mi Trabajo se aplican a quien entra con cuenta real, que es de quien
+   habla la frontera de seguridad del servidor. */
+function esAdmin()    { return currentUser?.rol === "admin"; }
+function esCajero()   { return currentUser?.rol === "cajero"; }
+function tieneIdentidadMecanico() {
+  return currentUser?.rol === "mecanico" && !!currentUser?.perfilId;
+}
+function esMecanicoCuenta() {
+  return currentUser?.rol === "mecanico" && currentUser?.origen === "supabase" && !!currentUser?.perfilId;
+}
+function puedeGestionarTaller() { return esAdmin() || esCajero(); }
+// Solo el administrador asigna y reasigna trabajo. Decisión de producto de 4E.
+function puedeAsignarMecanico() { return esAdmin(); }
+
+/* Propiedad SIEMPRE por uuid, jamás por nombre: dos personas pueden llamarse
+   igual y un nombre se cambia. mecanicoId nulo = sin asignar = de nadie, que
+   es exactamente lo que responde RLS en el servidor. */
+/* Rechaza y avisa. Se usa en los handlers, no solo al pintar: esconder un
+   botón no impide invocar su función desde la consola, y la mitad de estos
+   handlers se alcanzan por delegación de eventos. */
+function bloquear(motivo = "No tienes permiso para esa acción") {
+  toast(motivo, "off");
+  return false;
+}
+function exigeGestion(motivo) {
+  if (puedeGestionarTaller()) return true;
+  return bloquear(motivo || "Esa acción es del administrador");
+}
+
+function esTrabajoPropio(registro) {
+  const mio = currentUser?.perfilId;
+  return !!mio && !!registro?.mecanicoId && registro.mecanicoId === mio;
+}
+function puedeEditarTecnico(orden) {
+  if (!esMecanicoCuenta()) return puedeGestionarTaller();
+  return esTrabajoPropio(orden) && orden?.estado !== "entregado";
+}
+
 const NOMBRE_ROL = { admin: "administrador", cajero: "cajero", mecanico: "mecánico", desarrollador: "desarrollador" };
 
 // Horario del taller para el selector de citas: ajusta estos 3 valores si el
@@ -127,9 +188,29 @@ function navegarWA(ventana, phoneRaw, text) {
 }
 
 /* ---------------- IndexedDB helper mínimo ---------------- */
-function openDb() {
+// La base del taller de siempre. NO se renombra, NO se migra, NO se borra:
+// puede contener trabajo real todavía sin sincronizar.
+const BASE_TALLER = "entimotors_os_demo";
+
+/* Qué base le toca a esta sesión.
+   El taller (admin, cajero y cualquier sesión local de la lista TEAM) sigue
+   usando la de siempre, byte por byte. Un mecánico con cuenta real usa una
+   base propia, derivada de su perfilId.
+   La razón es que IndexedDB no tiene RLS: lo que llegue al dispositivo se lee
+   con las herramientas del navegador, filtre lo que filtre la pantalla. Si el
+   dueño entra a revisar algo en el teléfono de un mecánico y luego entra el
+   mecánico, sin esto le quedarían delante los datos del taller entero.
+   Aislar por perfil no borra nada de nadie: son bases distintas que conviven. */
+function nombreBaseParaSesion(session) {
+  if (session?.rol === "mecanico" && session?.origen === "supabase" && session?.perfilId) {
+    return `${BASE_TALLER}_mec_${session.perfilId}`;
+  }
+  return BASE_TALLER;
+}
+
+function openDb(nombre = BASE_TALLER) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("entimotors_os_demo", 6);
+    const req = indexedDB.open(nombre, 6);
     req.onupgradeneeded = (e) => {
       const d = req.result;
       const t = req.transaction;
@@ -343,6 +424,26 @@ const STORES_NO_RESPALDABLES = ["sync_cola"];
 // restaurando un respaldo viejo — y entonces la bitácora no probaría nada.
 const STORES_SOLO_AGREGAR = ["auditoria"];
 async function updateOrder(id, mutator) {
+  if (esMecanicoCuenta()) {
+    const actual = await DB.get("ordenes", id);
+    if (!esTrabajoPropio(actual)) { bloquear("Ese trabajo no está asignado a ti"); return actual; }
+    if (actual?.estado === "entregado") { bloquear("Este trabajo ya fue entregado"); return actual; }
+    /* Misma regla que el trigger de 4D, aquí arriba: un peldaño, hacia
+       adelante, y nunca hasta "entregado". Se comprueba sobre el resultado del
+       mutator y no sobre el botón, porque a updateOrder se llega por varios
+       caminos y el botón es solo uno de ellos. */
+    const tentativa = { ...actual };
+    mutator(tentativa);
+    if (tentativa.estado !== actual.estado) {
+      const paso = AVANCE_MECANICO[actual.estado];
+      if (!paso?.siguiente || tentativa.estado !== paso.siguiente) {
+        bloquear(tentativa.estado === "entregado"
+          ? "Entregar y cobrar es del administrador"
+          : "Solo puedes avanzar una etapa a la vez");
+        return actual;
+      }
+    }
+  }
   const o = await DB.get("ordenes", id);
   mutator(o);
   await DB.save("ordenes", o);
@@ -1397,9 +1498,8 @@ actualizarBotonTema();
    "me equivoqué de botón"; no evita a alguien decidido con su propio dispositivo. */
 function puedeVerVista(name) {
   if (!currentUser) return true;              // durante el arranque no hay rol todavía
-  const ocultas = VISTAS_OCULTAS_POR_ROL[currentUser.rol];
-  if (ocultas === null) return false;         // desarrollador: no entra al taller
-  return !(ocultas || VISTAS_SOLO_ADMIN).includes(name);
+  if (VISTAS_OCULTAS_POR_ROL[currentUser.rol] === null) return false;  // desarrollador
+  return !vistasOcultasParaSesion().includes(name);
 }
 
 function showView(name) {
@@ -1578,6 +1678,7 @@ document.addEventListener("click", (e) => {
   if (wrap && !wrap.contains(e.target)) document.getElementById("accountPanel").classList.remove("open");
 });
 const renderByView = {
+  "mi-trabajo": () => renderMiTrabajo(),
   dashboard: () => renderDashboard(),
   ordenes: () => renderOrdersList(),
   cotizaciones: () => renderCotizaciones(),
@@ -1632,6 +1733,81 @@ function renderWidgetRow(containerId, items) {
 }
 
 /* ================= DASHBOARD ================= */
+/* ── MI TRABAJO ───────────────────────────────────────────────────────────
+   La pantalla del mecánico. No es el panel del taller recortado: es su lista
+   de trabajo y nada más.
+
+   Filtra por esTrabajoPropio(), es decir, por uuid. Sobre la base aislada del
+   mecánico ese filtro debería ser redundante —ahí solo debería haber lo suyo—
+   pero se hace igual: si algún día un error de sincronización mete de más, la
+   pantalla no lo enseña. */
+async function renderMiTrabajo() {
+  const [citas, ordenes, clientes, motos] = await Promise.all([
+    DB.getAll("citas"), DB.getAll("ordenes"), DB.getAll("clientes"), DB.getAll("motos"),
+  ]);
+  const nombreCliente = (id) => clientes.find(c => c.id === id)?.nombre || "Cliente";
+  const telCliente = (id) => clientes.find(c => c.id === id)?.telefono || "";
+  const motoDe = (id) => motos.find(m => m.id === id);
+
+  document.getElementById("miTrabajoSub").textContent =
+    `${currentUser?.nombre || ""} · lo que tienes asignado.`;
+
+  const mias = citas.filter(esTrabajoPropio).filter(c => !citaCerrada(c))
+    .sort((a, b) => `${a.fecha}${a.hora}`.localeCompare(`${b.fecha}${b.hora}`));
+  document.getElementById("miTrabajoCitas").innerHTML = mias.length ? mias.map(c => `
+    <div class="card" style="margin-bottom:0.6rem;">
+      <div style="display:flex; justify-content:space-between; gap:0.6rem; align-items:baseline;">
+        <b>${esc(nombreCliente(c.clienteId) || c.nombreTmp || "Cliente")}</b>
+        <span class="pill">${esc(citaWhenInfo(c).label)} ${esc(c.hora || "")}</span>
+      </div>
+      <div class="meta">${esc(c.motivo || "Sin motivo especificado")}</div>
+      <div class="meta">${esc(telCliente(c.clienteId) || c.telefonoTmp || "sin teléfono")}</div>
+    </div>`).join("")
+    : `<div class="card"><p style="color:var(--text-muted); margin:0;">No tienes citas asignadas.</p></div>`;
+
+  const abiertas = ordenes.filter(esTrabajoPropio).filter(o => o.estado !== "entregado");
+  const entregadas = ordenes.filter(esTrabajoPropio).filter(o => o.estado === "entregado");
+  const tarjeta = (o, historial) => {
+    const m = motoDe(o.motoId);
+    return `<div class="card orden-mia" data-id="${o.id}" style="margin-bottom:0.6rem; cursor:pointer;">
+      <div style="display:flex; justify-content:space-between; gap:0.6rem; align-items:baseline;">
+        <b>#${o.id} — ${esc(m ? `${m.marca} ${m.modelo}` : "Moto")}</b>
+        <span class="pill ${esc(o.estado)}">${esc(etiquetaEtapa(o.estado))}</span>
+      </div>
+      <div class="meta">${esc(nombreCliente(o.clienteId))}${m?.placa ? " · placa " + esc(m.placa) : ""}</div>
+      <div class="meta">${esc(o.falla || "Sin descripción de la falla")}</div>
+      ${historial ? `<div class="meta">Solo lectura — trabajo entregado.</div>` : ""}
+    </div>`;
+  };
+  document.getElementById("miTrabajoOrdenes").innerHTML = abiertas.length
+    ? abiertas.map(o => tarjeta(o, false)).join("")
+    : `<div class="card"><p style="color:var(--text-muted); margin:0;">No tienes órdenes abiertas.</p></div>`;
+  document.getElementById("miTrabajoHistorial").innerHTML = entregadas.length
+    ? entregadas.map(o => tarjeta(o, true)).join("")
+    : `<div class="card"><p style="color:var(--text-muted); margin:0;">Todavía no has entregado ningún trabajo.</p></div>`;
+
+  document.querySelectorAll(".orden-mia").forEach(el => {
+    el.addEventListener("click", () => openOrder(Number(el.dataset.id)));
+  });
+}
+
+function etiquetaEtapa(key) {
+  return STAGES.find(s => s.key === key)?.label || key || "—";
+}
+
+/* El único avance que le corresponde al mecánico en cada etapa, con el texto
+   que de verdad describe lo que va a pasar. "Presupuesto" en la base es un
+   estado; para el mecánico es "ya terminé de diagnosticar", que es lo que
+   entiende. Nunca hay más de un botón, y en calidad no hay ninguno: entregar
+   y cobrar no es suyo. */
+const AVANCE_MECANICO = {
+  recibido:    { siguiente: "diagnostico", texto: "Empezar diagnóstico" },
+  diagnostico: { siguiente: "presupuesto", texto: "Diagnóstico listo para presupuesto" },
+  presupuesto: { siguiente: "reparacion",  texto: "Empezar reparación" },
+  reparacion:  { siguiente: "calidad",     texto: "Pasar a control de calidad" },
+  calidad:     { siguiente: null,          texto: "Trabajo técnico terminado — pendiente de entrega" },
+};
+
 async function renderDashboard() {
   const [ordenes, motos, clientes, inventario, citas, cotizaciones] = await Promise.all([
     DB.getAll("ordenes"), DB.getAll("motos"), DB.getAll("clientes"), DB.getAll("inventario"), DB.getAll("citas"),
@@ -1867,8 +2043,16 @@ async function renderOrdersList() {
 }
 
 async function openOrder(id) {
-  currentOrderId = id;
   const o = await DB.get("ordenes", id);
+  if (!o) return;
+  // La orden se carga por id venga de donde venga (lista, buscador, enlace).
+  // Aquí es donde se comprueba de quién es, no en el botón que la abrió.
+  if (esMecanicoCuenta() && !esTrabajoPropio(o)) {
+    bloquear("Ese trabajo no está asignado a ti");
+    showView("mi-trabajo"); renderMiTrabajo();
+    return;
+  }
+  currentOrderId = id;
   const moto = await DB.get("motos", o.motoId);
   const cliente = await DB.get("clientes", o.clienteId);
   currentOrderCache = { o, moto, cliente };
@@ -1881,7 +2065,9 @@ async function openOrder(id) {
     `${esc(cliente.nombre)} · ${esc(cliente.telefono || "sin teléfono")} · placa ${esc(moto.placa || "s/p")}${desdeCita}`;
   renderDetalleMecanico(o);
   document.getElementById("detalleFalla").textContent = o.falla || "(sin descripción)";
-  document.getElementById("inputKm").value = moto.km ?? "";
+  // lo legacy se sigue viendo: si la orden no trae km propio, se muestra el de
+  // la moto, igual que antes
+  document.getElementById("inputKm").value = o.kmSalida ?? moto.km ?? "";
   document.getElementById("inputKm").previousElementSibling.textContent = o.estado === "entregado" ? "Kilometraje de salida" : "Kilometraje actual";
 
   document.getElementById("detalleFotos").innerHTML = (o.fotos || []).map(src => `<img src="${src}">`).join("");
@@ -1889,6 +2075,7 @@ async function openOrder(id) {
   renderStageTracker(o.estado, o.finalizada);
   await renderStageContent(o);
   updateActionBar(o);
+  bloquearCamposSiEntregada(o);
 
   showView("detalle");
 }
@@ -1902,6 +2089,12 @@ function renderDetalleMecanico(o) {
     wrap.innerHTML = `Asignada a <b>${esc(o.mecanico || "Sin asignar")}</b> · <span class="pill ${origenTrabajoDe(o) === "negocio" ? "presupuesto" : "entregado"}">${origenTrabajoDe(o) === "negocio" ? "Negocio" : "Taller"}</span>`;
     return;
   }
+  // Solo el administrador asigna y reasigna. Al cajero y al mecánico se les
+  // enseña el nombre en texto: la información sigue ahí, la palanca no.
+  if (!puedeAsignarMecanico()) {
+    wrap.innerHTML = `Asignada a <b>${esc(o.mecanico || "Sin asignar")}</b> · <span class="pill ${origenTrabajoDe(o) === "negocio" ? "presupuesto" : "entregado"}">${origenTrabajoDe(o) === "negocio" ? "Negocio" : "Taller"}</span>`;
+    return;
+  }
   wrap.innerHTML = `Asignada a
     <select id="detalleMecanicoSel" style="display:inline-block; width:auto; padding:0.1rem 0.4rem; margin:0;"></select>
     · <select id="detalleOrigenSel" style="display:inline-block; width:auto; padding:0.1rem 0.4rem; margin:0;">
@@ -1910,6 +2103,7 @@ function renderDetalleMecanico(o) {
   poblarSelectMecanico("detalleMecanicoSel", o.mecanico, o.mecanicoId);
   document.getElementById("detalleOrigenSel").value = origenTrabajoDe(o);
   document.getElementById("detalleMecanicoSel").addEventListener("change", async (e) => {
+    if (!puedeAsignarMecanico()) { bloquear("Solo el administrador asigna trabajo"); return; }
     await updateOrder(o.id, ord => {
       const a = asignacionDesdeSelect("detalleMecanicoSel");
       ord.mecanico = a.mecanico; ord.mecanicoId = a.mecanicoId;
@@ -1923,12 +2117,53 @@ function renderDetalleMecanico(o) {
   });
 }
 
+/* Una orden entregada es historial para el mecánico. La base ya lo impide
+   desde 4D, pero no queremos que se entere escribiendo y recibiendo un error:
+   los campos no deben poder tocarse siquiera. */
+function bloquearCamposSiEntregada(o) {
+  if (!esMecanicoCuenta()) return;
+  const cerrada = o?.estado === "entregado" || !esTrabajoPropio(o);
+  ["inputKm", "inputFotos"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = cerrada;
+  });
+  document.querySelectorAll("#stageContent textarea, #stageContent input").forEach(el => {
+    el.disabled = cerrada;
+  });
+}
+
 function updateActionBar(o) {
   const isLast = o.estado === STAGES[STAGES.length - 1].key;
   const btnAvanzar = document.getElementById("btnAvanzar");
   const btnRetroceder = document.getElementById("btnRetroceder");
   const btnFactura = document.getElementById("btnImprimirFactura");
   const badge = document.getElementById("finalizadoBadge");
+
+  /* El mecánico no retrocede, no factura y no entrega. Solo tiene el paso
+     siguiente, con el nombre de lo que va a hacer — y en "calidad" ni eso:
+     ahí su parte terminó y le toca a administración. */
+  if (esMecanicoCuenta()) {
+    btnFactura.style.display = "none";
+    document.getElementById("btnEnviarFacturaWA").style.display = "none";
+    btnRetroceder.style.display = "none";
+    const paso = AVANCE_MECANICO[o.estado];
+    badge.style.display = "none";
+    if (o.estado === "entregado") {
+      btnAvanzar.style.display = "none";
+      badge.style.display = "inline-flex";
+      badge.textContent = "Trabajo entregado — solo lectura";
+      return;
+    }
+    if (!paso || !paso.siguiente) {
+      btnAvanzar.style.display = "none";
+      badge.style.display = "inline-flex";
+      badge.textContent = paso?.texto || "Sin acciones pendientes";
+      return;
+    }
+    btnAvanzar.style.display = "inline-flex";
+    btnAvanzar.textContent = paso.texto;
+    return;
+  }
 
   btnFactura.style.display = isLast ? "inline-flex" : "none";
   document.getElementById("btnEnviarFacturaWA").style.display = isLast ? "inline-flex" : "none";
@@ -1953,6 +2188,7 @@ function renderStageTracker(estado, finalizada) {
     return `<button class="stage ${cls}" data-i="${i}"><div class="idx">${String(i + 1).padStart(2, "0")}</div><h4>${s.label}</h4></button>`;
   }).join("");
   document.querySelectorAll(".stage").forEach(btn => {
+    if (esMecanicoCuenta()) { btn.disabled = true; btn.style.cursor = "default"; return; }
     btn.addEventListener("click", async () => {
       if (finalizada) { toast("Este trabajo ya está finalizado", "off"); return; }
       const i = Number(btn.dataset.i);
@@ -1982,7 +2218,15 @@ async function renderStageContent(o) {
     document.getElementById("diagHoras").addEventListener("change", (e) => updateOrder(o.id, ord => { ord.diagnostico = { ...(ord.diagnostico || {}), horas: Number(e.target.value) || 0 }; }));
 
   } else if (o.estado === "presupuesto") {
-    await renderPresupuestoStage(o);
+    /* Aquí viven los importes. El mecánico no los ve — ni siquiera se cargan
+       para esconderlos después: simplemente no se pide el bloque. */
+    if (esMecanicoCuenta()) {
+      el.innerHTML = `<div class="card"><p style="color:var(--text-muted); margin:0;">
+        Diagnóstico entregado. La cotización la prepara administración; cuando esté lista podrás empezar la reparación.
+      </p></div>`;
+    } else {
+      await renderPresupuestoStage(o);
+    }
 
   } else if (o.estado === "reparacion") {
     el.innerHTML = `
@@ -2015,6 +2259,13 @@ async function renderStageContent(o) {
         ord.calidadChecklist = { ...(ord.calidadChecklist || {}), [e.target.dataset.key]: e.target.checked };
       }));
     });
+
+  } else if (o.estado === "entregado" && esMecanicoCuenta()) {
+    // ni importes ni tipo de cobro ni garantía: para él es un registro cerrado
+    el.innerHTML = `<div class="card">
+      <h4 class="font-display" style="font-size:0.95rem; margin-bottom:0.4rem;">Entregada</h4>
+      <p style="color:var(--text-muted); margin:0;">Este trabajo ya se entregó. Queda como historial: puedes consultarlo, no modificarlo.</p>
+    </div>`;
 
   } else if (o.estado === "entregado") {
     const total = (o.items || []).reduce((s, it) => s + it.cantidad * it.precio, 0);
@@ -2294,6 +2545,10 @@ function identidadMecanico(registro) {
 
 /** Lo que hay que guardar cuando alguien elige un mecánico en un <select>. */
 function asignacionDesdeSelect(selectId) {
+  // Quien no asigna, crea sin asignar. No se rellena un nombre por defecto:
+  // un trabajo sin dueño debe verse como lo que es, para que el administrador
+  // lo asigne. Inventar un nombre aquí sería atribuir trabajo a alguien.
+  if (!puedeAsignarMecanico()) return { mecanico: "", mecanicoId: null };
   const sel = document.getElementById(selectId);
   const op = sel?.selectedOptions?.[0];
   return { mecanico: sel?.value || "", mecanicoId: op?.dataset?.perfilId || null };
@@ -2310,6 +2565,14 @@ function asignacionDelUsuarioActual() {
    `perfiles` (4C-2) solo cambia de dónde salen las opciones, no quién las lee. */
 function poblarSelectMecanico(selectId, seleccionado, seleccionadoId) {
   const sel = document.getElementById(selectId);
+  if (sel && !puedeAsignarMecanico()) {
+    // el <label> que lo acompaña se va con él; si no, queda un rótulo huérfano
+    sel.style.display = "none";
+    if (sel.previousElementSibling?.tagName === "LABEL") sel.previousElementSibling.style.display = "none";
+    sel.innerHTML = '<option value="">Sin asignar</option>';
+    sel.value = "";
+    return;
+  }
   sel.innerHTML = '<option value="">Sin asignar</option>' + TEAM.map(t =>
     `<option value="${esc(t.nombre)}"${t.perfilId ? ` data-perfil-id="${esc(t.perfilId)}"` : ""}>${esc(t.nombre)}</option>`).join("");
   if (seleccionadoId) {
@@ -2377,6 +2640,7 @@ document.getElementById("btnCancelarOrden").addEventListener("click", () => {
 });
 
 alHacerClicUnaVez(document.getElementById("btnCrearOrden"), async () => {
+  if (!exigeGestion("Las órdenes las abre el administrador o el cajero")) return;
   let clienteId, motoId;
 
   if (ordenClienteSel?.clienteId) {
@@ -2469,6 +2733,16 @@ document.getElementById("btnVolverOrdenes").addEventListener("click", async () =
 alHacerClicUnaVez(document.getElementById("btnAvanzar"), async () => {
   const o = await DB.get("ordenes", currentOrderId);
   const idx = STAGES.findIndex(s => s.key === o.estado);
+  /* El mecánico va por su propio carril: un paso, el que le toca, y jamás
+     hasta "entregado". Sale antes de llegar al bloque de cobro. */
+  if (esMecanicoCuenta()) {
+    const paso = AVANCE_MECANICO[o.estado];
+    if (!paso?.siguiente) { bloquear("Entregar y cobrar es del administrador"); return; }
+    await updateOrder(o.id, ord => { ord.estado = paso.siguiente; });
+    toast(`Etapa: ${etiquetaEtapa(paso.siguiente)}`);
+    openOrder(o.id);
+    return;
+  }
   if (idx >= STAGES.length - 1) {
     if (o.finalizada) {
       toast("Esta orden ya estaba finalizada — no se vuelve a cobrar", "off");
@@ -2540,6 +2814,7 @@ alHacerClicUnaVez(document.getElementById("btnAvanzar"), async () => {
   openOrder(o.id);
 });
 document.getElementById("btnRetroceder").addEventListener("click", async () => {
+  if (esMecanicoCuenta()) { bloquear("Un mecánico no retrocede etapas"); return; }
   const o = await DB.get("ordenes", currentOrderId);
   const idx = STAGES.findIndex(s => s.key === o.estado);
   if (idx <= 0) return;
@@ -2550,8 +2825,20 @@ document.getElementById("btnRetroceder").addEventListener("click", async () => {
 /* ---- km ---- */
 document.getElementById("inputKm").addEventListener("change", async (e) => {
   const o = await DB.get("ordenes", currentOrderId);
+  const valor = Number(e.target.value);
+  if (!valor) return;
+  /* El mecánico anota el kilometraje EN SU ORDEN (km_salida), no en la ficha
+     de la moto. La ficha del cliente es administrativa y desde 4D el servidor
+     ya le niega escribir en motos; si siguiéramos guardando ahí, el campo se
+     rompería en cuanto sincronice. Administración conserva su comportamiento
+     de siempre sobre motos.km. */
+  if (esMecanicoCuenta()) {
+    await updateOrder(o.id, ord => { ord.kmSalida = valor; });
+    toast("Kilometraje anotado en la orden");
+    return;
+  }
   const moto = await DB.get("motos", o.motoId);
-  moto.km = Number(e.target.value) || moto.km;
+  moto.km = valor || moto.km;
   await DB.save("motos", moto);
   markDirty();
   toast("Kilometraje actualizado");
@@ -2561,6 +2848,11 @@ document.getElementById("inputKm").addEventListener("change", async (e) => {
 document.getElementById("inputFotos").addEventListener("change", async (e) => {
   const files = Array.from(e.target.files || []);
   if (!files.length) return;
+  if (esMecanicoCuenta()) {
+    const o = await DB.get("ordenes", currentOrderId);
+    if (!esTrabajoPropio(o)) { e.target.value = ""; bloquear("Ese trabajo no está asignado a ti"); return; }
+    if (o?.estado === "entregado") { e.target.value = ""; bloquear("Este trabajo ya fue entregado"); return; }
+  }
   const urls = await Promise.all(files.map(fileToDataUrl));
   const o = await updateOrder(currentOrderId, ord => { ord.fotos = (ord.fotos || []).concat(urls); });
   e.target.value = "";
@@ -3541,6 +3833,7 @@ async function renderCitasList() {
   // "Llegó": abre la orden de servicio ya llena con los datos de la cita
   list.querySelectorAll('[data-action="llego"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador o el cajero registran la llegada")) return;
       e.stopPropagation();
       await abrirOrdenDesdeCita(Number(btn.dataset.id));
     });
@@ -3548,6 +3841,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="editar"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador o el cajero editan una cita")) return;
       e.stopPropagation();
       await abrirModalEditarCita(Number(btn.dataset.id));
     });
@@ -3555,6 +3849,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="mover"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador o el cajero mueven una cita")) return;
       e.stopPropagation();
       await abrirModalMoverCita(Number(btn.dataset.id));
     });
@@ -3562,6 +3857,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="ausente"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador o el cajero marcan una ausencia")) return;
       e.stopPropagation();
       const c = await DB.get("citas", Number(btn.dataset.id));
       await DB.save("citas", { ...c, estado: "ausente", cerradaEn: Date.now() });
@@ -3574,6 +3870,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="reabrir"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador o el cajero reabren una cita")) return;
       e.stopPropagation();
       const c = await DB.get("citas", Number(btn.dataset.id));
       delete c.estado; delete c.cerradaEn;
@@ -3591,6 +3888,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="recordar"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Los recordatorios los envía el administrador o el cajero")) return;
       e.stopPropagation();
       const ventanaWA = abrirVentanaWA();
       const id = Number(btn.dataset.id);
@@ -3607,6 +3905,7 @@ async function renderCitasList() {
 
   list.querySelectorAll('[data-action="eliminar"]').forEach(btn => {
     btn.addEventListener("click", async (e) => {
+      if (!exigeGestion("Solo el administrador elimina una cita")) return;
       e.stopPropagation();
       const ventanaWA = btn.dataset.tel ? abrirVentanaWA() : null;
       const id = Number(btn.dataset.id);
@@ -3955,6 +4254,7 @@ async function renderClientes() {
 let clienteDetalleId = null; // cliente cuya ficha está abierta, para saber a quién editar
 
 async function openClienteDetalle(id) {
+  if (esMecanicoCuenta()) { bloquear("La ficha del cliente es del administrador"); return; }
   const cliente = await DB.get("clientes", id);
   if (!cliente) return;
   clienteDetalleId = id;
@@ -5596,17 +5896,16 @@ document.getElementById("btnGuardarCMS").addEventListener("click", async () => {
 
 /* ================= AJUSTES: respaldo, restauración, reset, permisos ================= */
 function aplicarPermisosPorRol() {
-  const rol = currentUser?.rol || "mecanico";
-  const ocultas = VISTAS_OCULTAS_POR_ROL[rol] || VISTAS_SOLO_ADMIN;
+  const ocultas = vistasOcultasParaSesion();
   document.querySelectorAll(".nav-item[data-view]").forEach(btn => {
-    if (ocultas.includes(btn.dataset.view)) btn.style.display = "none";
-    else if (VISTAS_SOLO_ADMIN.includes(btn.dataset.view)) btn.style.display = "";
+    btn.style.display = ocultas.includes(btn.dataset.view) ? "none" : "";
   });
   // si un mecánico quedó parado en una vista restringida (por ejemplo, sesión
   // anterior era de admin en este mismo dispositivo), lo regresamos al dashboard
   if (ocultas.some(v => document.getElementById(`view-${v}`)?.classList.contains("active"))) {
-    showView("dashboard");
-    renderDashboard();
+    const destino = vistaInicial();
+    showView(destino);
+    if (destino === "mi-trabajo") renderMiTrabajo(); else renderDashboard();
   }
 }
 
@@ -6138,12 +6437,31 @@ async function seedIfEmpty() {
 
 /* ================= arranque de la app (tras pasar los dos gates) ================= */
 async function startApp(session) {
+  /* Fail closed antes de abrir NADA.
+     Un mecánico que entra con cuenta real y llega sin perfilId es una
+     identidad que no se pudo resolver, y sin identidad no hay forma de saber
+     qué trabajo es suyo. No hay respaldo por nombre a propósito: adivinar por
+     nombre es justo lo que esta fase viene a quitar. Antes de tocar ninguna
+     base, se corta la sesión. */
+  if (session?.rol === "mecanico" && session?.origen === "supabase" && !session?.perfilId) {
+    currentUser = null;
+    document.getElementById("shell").classList.remove("active");
+    document.getElementById("gateLogin").classList.add("active");
+    document.getElementById("loginError").textContent =
+      "No se pudo validar tu identidad de trabajador. Habla con el administrador.";
+    localStorage.removeItem("enti_session");
+    if (window.Auth) { try { await Auth.cerrarSesion(); } catch { /* la sesión local ya quedó fuera */ } }
+    return;
+  }
+
   currentUser = session;
   document.getElementById("loggedUserName").textContent = session.nombre;
   document.getElementById("loggedUserRole").textContent =
     (NOMBRE_ROL[session.rol] || session.rol || "") + (session.origen === "supabase" ? "" : " · local");
 
-  db = await openDb();
+  // Cada identidad, su base. Se decide ANTES de la primera lectura: abrir la
+  // del taller "un momento" y cambiar después ya habría expuesto los datos.
+  db = await openDb(nombreBaseParaSesion(session));
 
   const clientesExistentes = await DB.getAll("clientes");
   const modo = localStorage.getItem("enti_modo_datos");
@@ -6182,6 +6500,17 @@ async function continuarArranque(modo) {
     else console.info("[ENTIMOTORS] cuenta de prueba: ya hay datos reales, no se siembra nada");
   }
   aplicarPermisosPorRol();
+  /* Un mecánico solo necesita su pantalla. Pintar de paso el POS, las finanzas
+     y el CMS no solo sobra: cada uno de esos render hace DB.getAll de tablas
+     enteras, y aquí lo que queremos es justo lo contrario. */
+  if (esMecanicoCuenta()) {
+    showView("mi-trabajo");
+    await renderMiTrabajo();
+    renderSyncChip();
+    document.getElementById("fabHome").classList.add("fab-hidden");
+    wireServiceWorkerUpdates();
+    return;
+  }
   await renderOrdersList();
   await renderClientes();
   await renderInventario();
