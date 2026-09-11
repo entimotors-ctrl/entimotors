@@ -8,6 +8,9 @@ const CACHE_NAME = "entimotors-v3.12.2";
 // sin señal. config-local.js NO va aquí (es solo de desarrollo y no se publica)
 // y panel-tecnico.html tampoco (es una página aparte, no parte de la PWA).
 const SHELL = ["./", "./index.html",
+  // build-target.js va en el SHELL a propósito: sin él, un arranque sin señal
+  // no sabría qué producto es esta copia y asumiría el taller.
+  "./build-target.js?v=3.12.2",
   "./supabase-config.js?v=3.12.2", "./supabase-client.js?v=3.12.2",
   "./auth.js?v=3.12.2", "./recovery.js?v=3.12.2",
   "./app.js?v=3.12.2", "./usuarios.js?v=3.12.2",

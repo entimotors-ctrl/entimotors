@@ -2344,6 +2344,9 @@
 <!-- config-local.js es opcional (ignorado por Git): sin él, el login local de
      TEAM y el código de administrador quedan deshabilitados, pero el resto de
      la app sigue funcionando igual. Ver config-local.example.js. -->
+<!-- Declara si esta copia es el taller o «Mi Trabajo». Va primero: app.js lo
+     lee al arrancar. Ver build-target.js. -->
+<script src="build-target.js?v=3.12.2"></script>
 <!-- Capa de Supabase. Si supabase-config.js no existe o está sin rellenar, los
      cuatro se cargan igual y no hacen nada: la app sigue funcionando entera con
      IndexedDB, como hasta ahora. -->

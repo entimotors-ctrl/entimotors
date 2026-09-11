@@ -28,6 +28,64 @@ const ORIGENES_TRABAJO = [
 ];
 function origenTrabajoDe(o) { return o?.origenTrabajo === "negocio" ? "negocio" : "taller"; }
 
+/* ================= QUÉ PRODUCTO ES ESTA COPIA =================
+   ENTIMOTORS se publica dos veces, en dos ORIGINS distintos: el taller de
+   siempre y «Mi Trabajo» para mecánicos. build-target.js lo declara; si falta,
+   se asume el taller, que es la operación histórica.
+
+   Esto NO protege nada: quien abra la consola puede reescribirlo. Lo que de
+   verdad separa a las dos apps es que viven en hostnames distintos —y la
+   política de mismo origen sí la impone el navegador— más las RLS del
+   servidor. Aquí solo se decide qué producto se arma. */
+const PRODUCTO = window.ENTIMOTORS_BUILD?.producto === "mecanico" ? "mecanico" : "admin";
+const ES_APP_MECANICOS = PRODUCTO === "mecanico";
+// El login de la lista TEAM solo existe en el taller. En «Mi Trabajo» no se
+// esconde el formulario: se rechaza en el handler, aunque alguien inyecte
+// window.ENTIMOTORS_LOCAL a mano.
+const PERMITE_LOGIN_LOCAL = !ES_APP_MECANICOS;
+
+/* El portero. Se ejecuta ANTES de abrir ninguna base: una sesión que no
+   corresponde a este producto no debe llegar a tocar IndexedDB, ni siquiera
+   para leerla un instante. Devuelve el motivo en el idioma del taller, porque
+   se le enseña tal cual a quien intenta entrar. */
+function sesionAdmitida(session) {
+  if (!session || !session.rol) return { ok: false, motivo: "No se pudo leer tu sesión. Vuelve a entrar." };
+
+  if (ES_APP_MECANICOS) {
+    // Aquí solo entra un mecánico con cuenta real, activa y con identidad.
+    if (session.origen !== "supabase")
+      return { ok: false, motivo: "Aquí se entra solo con tu correo y contraseña de ENTIMOTORS." };
+    if (session.rol !== "mecanico")
+      return { ok: false, motivo: "Esta cuenta se usa desde ENTIMOTORS Taller, no desde Mi Trabajo." };
+    if (session.activo === false)
+      return { ok: false, motivo: "Esta cuenta está dada de baja. Habla con el administrador." };
+    if (typeof session.perfilId !== "string" || !session.perfilId)
+      return { ok: false, motivo: "No se pudo validar tu identidad de trabajador. Habla con el administrador." };
+    return { ok: true };
+  }
+
+  // Taller: el mecánico con cuenta de Supabase tiene su propia app. Las cuentas
+  // locales de la lista TEAM siguen entrando como siempre — ver TEAM más abajo.
+  if (session.rol === "mecanico" && session.origen === "supabase")
+    return { ok: false, motivo: "Esta cuenta debe ingresar desde ENTIMOTORS Mi Trabajo." };
+  return { ok: true };
+}
+
+// Deja la app cerrada y devuelve a quien sea al login, sin haber abierto base
+// alguna. No borra nada del dispositivo: solo se va la sesión.
+async function denegarSesion(motivo) {
+  currentUser = null;
+  document.getElementById("shell").classList.remove("active");
+  /* Sin esto el login se enseña muerto: arrancarConSesion() solo cablea el
+     formulario cuando NO hay sesión guardada, así que a quien rechazamos aquí
+     no le respondería el botón de entrar. */
+  wireLoginGate();
+  document.getElementById("gateLogin").classList.add("active");
+  document.getElementById("loginError").textContent = motivo;
+  localStorage.removeItem("enti_session");
+  if (window.Auth) { try { await Auth.cerrarSesion(); } catch { /* la sesión local ya quedó fuera */ } }
+}
+
 // Equipo del taller para el login local (sin red). Solo datos no secretos:
 // las contraseñas NO viven aquí porque este archivo se descarga completo con
 // cualquier PWA publicada. Viven en taller-demo/config-local.js (ignorado por
@@ -205,6 +263,11 @@ function nombreBaseParaSesion(session) {
   if (session?.rol === "mecanico" && session?.origen === "supabase" && session?.perfilId) {
     return `${BASE_TALLER}_mec_${session.perfilId}`;
   }
+  /* En «Mi Trabajo» no hay base del taller. El portero ya rechazó todo lo que
+     no sea un mecánico con identidad, así que llegar aquí es un error de
+     programación: devolvemos null para que reviente a la vista en vez de
+     abrir entimotors_os_demo en el dispositivo de un mecánico. */
+  if (ES_APP_MECANICOS) return null;
   return BASE_TALLER;
 }
 
@@ -1381,7 +1444,9 @@ function sesionDesdePerfil(perfil, correo) {
   // el trabajo siga siendo suyo aunque cambie de nombre. En una sesión local
   // (lista TEAM, sin cuenta) vale null, y eso es válido: ver identidadMecanico().
   return { user: correo, uid: perfil.uid, perfilId: perfil.uid || perfil.id || null,
-           nombre: perfil.nombre, telefono: "", rol: perfil.rol, origen: "supabase" };
+           nombre: perfil.nombre, telefono: "", rol: perfil.rol, origen: "supabase",
+           // lo comprueba el portero: una cuenta dada de baja no abre ninguna base
+           activo: perfil.activo !== false };
 }
 
 function pintarModoLogin() {
@@ -1393,7 +1458,13 @@ function pintarModoLogin() {
     : "";
 }
 
+let loginGateCableado = false;
 function wireLoginGate() {
+  // Idempotente: el portero puede mostrar el login en un arranque donde
+  // arrancarConSesion() ya lo había cableado, y duplicar el listener haría que
+  // cada intento de entrar se procesara dos veces.
+  if (loginGateCableado) return;
+  loginGateCableado = true;
   pintarModoLogin();
   window.addEventListener("online", pintarModoLogin);
   window.addEventListener("offline", pintarModoLogin);
@@ -1426,6 +1497,14 @@ function wireLoginGate() {
     }
 
     // ── camino local (sin red, o usuario del equipo sin correo) ──
+    /* En «Mi Trabajo» este camino no existe, y se corta ANTES de mirar la lista
+       TEAM o de llamar a claveLocal(). No depende de que config-local.js dé
+       404: aunque alguien inyecte window.ENTIMOTORS_LOCAL en la consola, por
+       aquí no se pasa. */
+    if (!PERMITE_LOGIN_LOCAL) {
+      errEl.textContent = "Aquí se entra solo con tu correo y contraseña de ENTIMOTORS.";
+      return;
+    }
     const u = entrada.toLowerCase();
     const miembro = TEAM.find(t => t.user === u);
     const clave = miembro && claveLocal(miembro.user);
@@ -1445,13 +1524,19 @@ function wireLoginGate() {
 /* El desarrollador no entra al taller: mientras los datos vivan en IndexedDB,
    RLS no puede protegerlos, y su rol existe precisamente para no verlos. */
 function entrarConSesion(session) {
-  if (session.rol === "desarrollador") {
+  // El panel técnico solo existe en el taller; en «Mi Trabajo» al desarrollador
+  // lo rechaza el portero como a cualquier otro rol que no sea mecánico.
+  if (!ES_APP_MECANICOS && session.rol === "desarrollador") {
     const errEl = document.getElementById("loginError");
     errEl.innerHTML = 'Cuenta técnica: no abre el taller. Usa el ' +
                       '<a href="panel-tecnico.html" style="text-decoration:underline;">panel técnico</a>.';
     if (window.Auth) Auth.cerrarSesion();
     return;
   }
+  /* Se comprueba ANTES de guardar la sesión: una cuenta que no es de este
+     producto no deja rastro en el dispositivo. */
+  const admitida = sesionAdmitida(session);
+  if (!admitida.ok) { denegarSesion(admitida.motivo); return; }
   localStorage.setItem("enti_session", JSON.stringify(session));
   document.getElementById("gateLogin").classList.remove("active");
   startApp(session);
@@ -6437,22 +6522,15 @@ async function seedIfEmpty() {
 
 /* ================= arranque de la app (tras pasar los dos gates) ================= */
 async function startApp(session) {
-  /* Fail closed antes de abrir NADA.
-     Un mecánico que entra con cuenta real y llega sin perfilId es una
-     identidad que no se pudo resolver, y sin identidad no hay forma de saber
-     qué trabajo es suyo. No hay respaldo por nombre a propósito: adivinar por
-     nombre es justo lo que esta fase viene a quitar. Antes de tocar ninguna
-     base, se corta la sesión. */
-  if (session?.rol === "mecanico" && session?.origen === "supabase" && !session?.perfilId) {
-    currentUser = null;
-    document.getElementById("shell").classList.remove("active");
-    document.getElementById("gateLogin").classList.add("active");
-    document.getElementById("loginError").textContent =
-      "No se pudo validar tu identidad de trabajador. Habla con el administrador.";
-    localStorage.removeItem("enti_session");
-    if (window.Auth) { try { await Auth.cerrarSesion(); } catch { /* la sesión local ya quedó fuera */ } }
-    return;
-  }
+  /* Fail closed antes de abrir NADA. Aquí llegan también las sesiones que ya
+     estaban guardadas en el dispositivo, así que el portero se repite: no basta
+     con haberlo comprobado al iniciar sesión.
+     Un mecánico que llega sin perfilId es una identidad que no se pudo
+     resolver, y sin identidad no hay forma de saber qué trabajo es suyo. No hay
+     respaldo por nombre a propósito: adivinar por nombre es justo lo que esta
+     fase vino a quitar. */
+  const admitida = sesionAdmitida(session);
+  if (!admitida.ok) { await denegarSesion(admitida.motivo); return; }
 
   currentUser = session;
   document.getElementById("loggedUserName").textContent = session.nombre;
@@ -6461,7 +6539,9 @@ async function startApp(session) {
 
   // Cada identidad, su base. Se decide ANTES de la primera lectura: abrir la
   // del taller "un momento" y cambiar después ya habría expuesto los datos.
-  db = await openDb(nombreBaseParaSesion(session));
+  const baseDeEstaSesion = nombreBaseParaSesion(session);
+  if (!baseDeEstaSesion) { await denegarSesion("No se pudo preparar tu espacio de trabajo."); return; }
+  db = await openDb(baseDeEstaSesion);
 
   const clientesExistentes = await DB.getAll("clientes");
   const modo = localStorage.getItem("enti_modo_datos");
