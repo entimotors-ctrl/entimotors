@@ -42,30 +42,57 @@ const ADMIN_ORIGIN = process.env["ENTIMOTORS_ADMIN_ORIGIN"];
 const MECHANIC_ORIGIN = process.env["ENTIMOTORS_MECHANIC_ORIGIN"];
 
 /* La recuperación no tiene página propia: recovery.js corre dentro del
-   index.html de la app y lee el hash que deja Supabase. Ver taller-demo/recovery.js. */
+   index.html de la app y lee el hash que deja Supabase. Ver taller-demo/recovery.js.
+
+   La URL se construye sobre el objeto YA PARSEADO, nunca sobre la cadena cruda.
+   El parser de WHATWG tolera espacios y saltos de línea —que es justo lo que
+   trae un valor pegado a mano en el panel de Render—, así que validar con `u`
+   y concatenar con `base` dejaba pasar basura hasta dentro del enlace. */
+const PAGINA = "index.html";
+
 function urlDeRegreso(base: string): string | null {
   let u: URL;
-  try { u = new URL(base); } catch { return null; }
+  try { u = new URL(base.trim()); } catch { return null; }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-  return base.replace(/\/+$/, "") + "/index.html";
+
+  /* Ni la query ni el fragmento forman parte del contrato: la variable declara
+     DÓNDE vive la app, no con qué parámetros se abre. El fragmento además es
+     exactamente donde Supabase deja el token de recuperación, y conservar uno
+     puesto a mano lo pisaría. */
+  u.search = "";
+  u.hash = "";
+
+  /* El pathname sí se respeta: el taller vive en /entimotors-os/, no en la
+     raíz de su dominio. Y si la variable ya apunta al index, no se duplica. */
+  const ruta = u.pathname.replace(/\/+$/, "");
+  u.pathname = ruta.endsWith(`/${PAGINA}`) ? ruta : `${ruta}/${PAGINA}`;
+  return u.toString();
 }
+
+/** Por qué no hubo destino. Viaja hasta la respuesta para poder distinguir un
+    despiste de configuración de un rechazo de Supabase sin abrir los logs. */
+export type FalloDestino = "rol-desconocido" | "sin-origin" | "origin-invalido";
 
 /** Qué app le toca a cada rol. Allowlist fija: lo que no está, no pasa. */
 export function destinoDeRecuperacion(rol: string):
-  { ok: true; url: string } | { ok: false; error: string } {
+  { ok: true; url: string } | { ok: false; motivo: FalloDestino; error: string } {
   let base: string | undefined;
   if (rol === "mecanico") base = MECHANIC_ORIGIN;
   // El desarrollador vuelve al taller porque es donde vive panel-tecnico.html;
   // entrar al taller sigue sin poder, eso lo decide la propia app.
   else if (rol === "admin" || rol === "cajero" || rol === "desarrollador") base = ADMIN_ORIGIN;
-  else return { ok: false, error: `Rol sin destino de recuperación: "${rol}".` };
+  else return { ok: false, motivo: "rol-desconocido", error: `Rol sin destino de recuperación: "${rol}".` };
 
-  if (!base) {
+  // una variable puesta pero vacía (o a espacios) es un olvido, no una dirección mala
+  if (!base || !base.trim()) {
     const falta = rol === "mecanico" ? "ENTIMOTORS_MECHANIC_ORIGIN" : "ENTIMOTORS_ADMIN_ORIGIN";
-    return { ok: false, error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
+    return { ok: false, motivo: "sin-origin", error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
   }
   const url = urlDeRegreso(base);
-  if (!url) return { ok: false, error: "La dirección configurada para esta app no es válida." };
+  if (!url) {
+    return { ok: false, motivo: "origin-invalido",
+             error: "La dirección configurada para esta app no es válida: tiene que empezar por https://" };
+  }
   return { ok: true, url };
 }
 
@@ -247,23 +274,61 @@ router.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req: Pet
      que hay en la base. */
   let enlace: string | null = null;
   let avisoEnlace: string | null = null;
+  let motivoSinEnlace: string | null = null;
   const destino = destinoDeRecuperacion(String(perfilGuardado?.rol ?? rol));
   if (!destino.ok) {
     avisoEnlace = destino.error;
-    logger.error({ rol: perfilGuardado?.rol ?? rol }, "sin destino de recuperación: no se genera enlace");
+    motivoSinEnlace = destino.motivo;
+    logger.error({ rol: perfilGuardado?.rol ?? rol, motivo: destino.motivo },
+                 "sin destino de recuperación: no se genera enlace");
   } else {
+    /* generateLink NO lanza cuando la API contesta con un error de Auth: devuelve
+       { data: { properties: null, user: null }, error } y solo relanza lo que no
+       es de Auth. Desestructurar únicamente `data` tiraba ese `error` a la basura
+       y el enlace salía null sin que nada quedara registrado — exactamente lo que
+       pasó en GATE 7A-1. Por eso aquí se miran las dos cosas, y el try/catch se
+       queda para lo otro: red, DNS, timeout. */
     try {
-      const { data: link } = await servidor.auth.admin.generateLink({
+      const { data: link, error: errEnlace } = await servidor.auth.admin.generateLink({
         type: "recovery", email: correo,
         options: { redirectTo: destino.url },
       });
-      enlace = link?.properties?.action_link ?? null;
-    } catch { enlace = null; }
+      if (errEnlace) {
+        motivoSinEnlace = "supabase-rechazo";
+        avisoEnlace = "Supabase no aceptó generar el enlace. Revisa que la dirección de vuelta esté en Authentication → URL Configuration → Redirect URLs.";
+        /* Del error solo lo que sirve para diagnosticar. El enlace y el token
+           no pasan por aquí: no están en `error`, y no se registran nunca. */
+        logger.error({
+          motivo: motivoSinEnlace,
+          destino: destino.url,           // lo fija el servidor, no es un secreto
+          estado: errEnlace.status ?? null,
+          codigo: (errEnlace as { code?: string }).code ?? null,
+          mensaje: errEnlace.message,
+        }, "generateLink falló: no se genera enlace");
+      } else {
+        enlace = link?.properties?.action_link ?? null;
+        if (!enlace) {
+          motivoSinEnlace = "sin-action-link";
+          avisoEnlace = "Supabase respondió sin enlace utilizable.";
+          logger.error({ motivo: motivoSinEnlace }, "generateLink no devolvió action_link");
+        }
+      }
+    } catch (e) {
+      motivoSinEnlace = "error-de-red";
+      avisoEnlace = "No se pudo contactar con Supabase para generar el enlace.";
+      logger.error({ motivo: motivoSinEnlace, mensaje: e instanceof Error ? e.message : String(e) },
+                   "generateLink lanzó una excepción");
+    }
   }
 
+  /* 201 aunque no haya enlace, a propósito: la cuenta EXISTE. Devolver un error
+     haría creer al administrador que no se creó nada y le llevaría a repetir el
+     alta contra un correo ya registrado. Lo que falta es el enlace, y eso lo
+     dicen `nota` y `motivoSinEnlace`. */
   res.status(201).json({
     usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
     enlaceParaEstablecerClave: enlace,
+    motivoSinEnlace,
     nota: enlace
       ? "Pásale este enlace a la persona. Es de un solo uso: ahí elige su contraseña."
       : (avisoEnlace ?? "") +

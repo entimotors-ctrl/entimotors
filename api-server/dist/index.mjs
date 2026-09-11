@@ -71283,27 +71283,38 @@ var SERVICE_KEY = process.env["SUPABASE_SERVICE_KEY"];
 var ANON_KEY = process.env["SUPABASE_ANON_KEY"];
 var ADMIN_ORIGIN = process.env["ENTIMOTORS_ADMIN_ORIGIN"];
 var MECHANIC_ORIGIN = process.env["ENTIMOTORS_MECHANIC_ORIGIN"];
+var PAGINA = "index.html";
 function urlDeRegreso(base) {
   let u;
   try {
-    u = new URL(base);
+    u = new URL(base.trim());
   } catch {
     return null;
   }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-  return base.replace(/\/+$/, "") + "/index.html";
+  u.search = "";
+  u.hash = "";
+  const ruta = u.pathname.replace(/\/+$/, "");
+  u.pathname = ruta.endsWith(`/${PAGINA}`) ? ruta : `${ruta}/${PAGINA}`;
+  return u.toString();
 }
 function destinoDeRecuperacion(rol) {
   let base;
   if (rol === "mecanico") base = MECHANIC_ORIGIN;
   else if (rol === "admin" || rol === "cajero" || rol === "desarrollador") base = ADMIN_ORIGIN;
-  else return { ok: false, error: `Rol sin destino de recuperaci\xF3n: "${rol}".` };
-  if (!base) {
+  else return { ok: false, motivo: "rol-desconocido", error: `Rol sin destino de recuperaci\xF3n: "${rol}".` };
+  if (!base || !base.trim()) {
     const falta = rol === "mecanico" ? "ENTIMOTORS_MECHANIC_ORIGIN" : "ENTIMOTORS_ADMIN_ORIGIN";
-    return { ok: false, error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
+    return { ok: false, motivo: "sin-origin", error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
   }
   const url = urlDeRegreso(base);
-  if (!url) return { ok: false, error: "La direcci\xF3n configurada para esta app no es v\xE1lida." };
+  if (!url) {
+    return {
+      ok: false,
+      motivo: "origin-invalido",
+      error: "La direcci\xF3n configurada para esta app no es v\xE1lida: tiene que empezar por https://"
+    };
+  }
   return { ok: true, url };
 }
 if (!SUPABASE_URL2 || !SERVICE_KEY) {
@@ -71430,25 +71441,54 @@ router7.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req, re
   }
   let enlace = null;
   let avisoEnlace = null;
+  let motivoSinEnlace = null;
   const destino = destinoDeRecuperacion(String(perfilGuardado?.rol ?? rol));
   if (!destino.ok) {
     avisoEnlace = destino.error;
-    logger.error({ rol: perfilGuardado?.rol ?? rol }, "sin destino de recuperaci\xF3n: no se genera enlace");
+    motivoSinEnlace = destino.motivo;
+    logger.error(
+      { rol: perfilGuardado?.rol ?? rol, motivo: destino.motivo },
+      "sin destino de recuperaci\xF3n: no se genera enlace"
+    );
   } else {
     try {
-      const { data: link } = await servidor.auth.admin.generateLink({
+      const { data: link, error: errEnlace } = await servidor.auth.admin.generateLink({
         type: "recovery",
         email: correo,
         options: { redirectTo: destino.url }
       });
-      enlace = link?.properties?.action_link ?? null;
-    } catch {
-      enlace = null;
+      if (errEnlace) {
+        motivoSinEnlace = "supabase-rechazo";
+        avisoEnlace = "Supabase no acept\xF3 generar el enlace. Revisa que la direcci\xF3n de vuelta est\xE9 en Authentication \u2192 URL Configuration \u2192 Redirect URLs.";
+        logger.error({
+          motivo: motivoSinEnlace,
+          destino: destino.url,
+          // lo fija el servidor, no es un secreto
+          estado: errEnlace.status ?? null,
+          codigo: errEnlace.code ?? null,
+          mensaje: errEnlace.message
+        }, "generateLink fall\xF3: no se genera enlace");
+      } else {
+        enlace = link?.properties?.action_link ?? null;
+        if (!enlace) {
+          motivoSinEnlace = "sin-action-link";
+          avisoEnlace = "Supabase respondi\xF3 sin enlace utilizable.";
+          logger.error({ motivo: motivoSinEnlace }, "generateLink no devolvi\xF3 action_link");
+        }
+      }
+    } catch (e) {
+      motivoSinEnlace = "error-de-red";
+      avisoEnlace = "No se pudo contactar con Supabase para generar el enlace.";
+      logger.error(
+        { motivo: motivoSinEnlace, mensaje: e instanceof Error ? e.message : String(e) },
+        "generateLink lanz\xF3 una excepci\xF3n"
+      );
     }
   }
   res.status(201).json({
     usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
     enlaceParaEstablecerClave: enlace,
+    motivoSinEnlace,
     nota: enlace ? "P\xE1sale este enlace a la persona. Es de un solo uso: ah\xED elige su contrase\xF1a." : (avisoEnlace ?? "") + (avisoEnlace ? " " : "") + "La cuenta est\xE1 creada. Para darle contrase\xF1a: panel de Supabase \u2192 Authentication \u2192 el usuario \u2192 Reset password."
   });
 });
