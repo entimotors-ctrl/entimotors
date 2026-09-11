@@ -1,0 +1,22 @@
+# Política de scripts de instalación.
+#
+# Desde pnpm 10 los scripts de instalación de las dependencias NO se ejecutan
+# salvo que se aprueben de una en una, y pnpm 12 —el que instala Render con
+# "npm install -g pnpm"— corta el install con ERR_PNPM_IGNORED_BUILDS en lugar
+# de limitarse a avisar. Sin este archivo, el build de producción falla así:
+#
+#     Error: ERR_PNPM_IGNORED_BUILDS
+#       ╰─▶ Ignored build scripts: esbuild@0.27.7
+#
+# Se aprueba UNA sola dependencia, y a conciencia: esbuild es el empaquetador
+# con el que build.mjs genera dist/index.mjs, y su script de instalación es el
+# que deja listo el binario nativo de la plataforma. Sin ese binario no hay
+# build; no es una dependencia opcional que se pueda dejar a medias.
+#
+# strictDepBuilds queda explícito para que esto siga siendo un ERROR y no un
+# aviso: si mañana otra dependencia trae un script de instalación, el build
+# tiene que pararse y que alguien decida, no ejecutarlo en silencio.
+# Por lo mismo, aquí NUNCA va dangerouslyAllowAllBuilds.
+strictDepBuilds: true
+allowBuilds:
+  esbuild: true
