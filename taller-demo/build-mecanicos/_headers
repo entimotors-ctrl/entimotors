@@ -1,0 +1,17 @@
+# Netlify · «Mi Trabajo». Solo existe en el build de mecánicos.
+#
+# Estos cuatro deciden QUÉ aplicación es y CÓMO se actualiza. Si el CDN o el
+# navegador sirven una copia vieja de cualquiera de ellos, el dispositivo se
+# queda con una versión anterior del producto sin avisar. El resto de archivos
+# lleva ?v= en la URL, así que con el trato normal de Netlify basta.
+#
+# Esto NO cambia la estrategia de actualización de la PWA: sigue sin haber
+# skipWaiting automático — la versión nueva espera a que se cierre la anterior.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+/build-target.js
+  Cache-Control: public, max-age=0, must-revalidate
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+/manifest.json
+  Cache-Control: public, max-age=0, must-revalidate

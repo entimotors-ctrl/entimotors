@@ -71281,6 +71281,31 @@ var logger = (0, import_pino.default)({
 var SUPABASE_URL2 = process.env["SUPABASE_URL"];
 var SERVICE_KEY = process.env["SUPABASE_SERVICE_KEY"];
 var ANON_KEY = process.env["SUPABASE_ANON_KEY"];
+var ADMIN_ORIGIN = process.env["ENTIMOTORS_ADMIN_ORIGIN"];
+var MECHANIC_ORIGIN = process.env["ENTIMOTORS_MECHANIC_ORIGIN"];
+function urlDeRegreso(base) {
+  let u;
+  try {
+    u = new URL(base);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  return base.replace(/\/+$/, "") + "/index.html";
+}
+function destinoDeRecuperacion(rol) {
+  let base;
+  if (rol === "mecanico") base = MECHANIC_ORIGIN;
+  else if (rol === "admin" || rol === "cajero" || rol === "desarrollador") base = ADMIN_ORIGIN;
+  else return { ok: false, error: `Rol sin destino de recuperaci\xF3n: "${rol}".` };
+  if (!base) {
+    const falta = rol === "mecanico" ? "ENTIMOTORS_MECHANIC_ORIGIN" : "ENTIMOTORS_ADMIN_ORIGIN";
+    return { ok: false, error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
+  }
+  const url = urlDeRegreso(base);
+  if (!url) return { ok: false, error: "La direcci\xF3n configurada para esta app no es v\xE1lida." };
+  return { ok: true, url };
+}
 if (!SUPABASE_URL2 || !SERVICE_KEY) {
   throw new Error("Faltan SUPABASE_URL y SUPABASE_SERVICE_KEY");
 }
@@ -71396,7 +71421,7 @@ router7.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req, re
     return;
   }
   const nuevoId = creado.user.id;
-  const { error: errPerfil } = await comoElAdmin(req.quien.token).from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId);
+  const { data: perfilGuardado, error: errPerfil } = await comoElAdmin(req.quien.token).from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId).select("rol").single();
   if (errPerfil) {
     await servidor.auth.admin.deleteUser(nuevoId).catch(() => void 0);
     logger.error({ err: errPerfil }, "no se pudo fijar el perfil; alta deshecha");
@@ -71404,16 +71429,27 @@ router7.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req, re
     return;
   }
   let enlace = null;
-  try {
-    const { data: link } = await servidor.auth.admin.generateLink({ type: "recovery", email: correo });
-    enlace = link?.properties?.action_link ?? null;
-  } catch {
-    enlace = null;
+  let avisoEnlace = null;
+  const destino = destinoDeRecuperacion(String(perfilGuardado?.rol ?? rol));
+  if (!destino.ok) {
+    avisoEnlace = destino.error;
+    logger.error({ rol: perfilGuardado?.rol ?? rol }, "sin destino de recuperaci\xF3n: no se genera enlace");
+  } else {
+    try {
+      const { data: link } = await servidor.auth.admin.generateLink({
+        type: "recovery",
+        email: correo,
+        options: { redirectTo: destino.url }
+      });
+      enlace = link?.properties?.action_link ?? null;
+    } catch {
+      enlace = null;
+    }
   }
   res.status(201).json({
     usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
     enlaceParaEstablecerClave: enlace,
-    nota: enlace ? "P\xE1sale este enlace a la persona. Es de un solo uso: ah\xED elige su contrase\xF1a." : "La cuenta est\xE1 creada. Para darle contrase\xF1a: panel de Supabase \u2192 Authentication \u2192 el usuario \u2192 Reset password."
+    nota: enlace ? "P\xE1sale este enlace a la persona. Es de un solo uso: ah\xED elige su contrase\xF1a." : (avisoEnlace ?? "") + (avisoEnlace ? " " : "") + "La cuenta est\xE1 creada. Para darle contrase\xF1a: panel de Supabase \u2192 Authentication \u2192 el usuario \u2192 Reset password."
   });
 });
 router7.patch("/admin/usuarios/:id", exigirConfiguracion, exigirAdmin, async (req, res) => {

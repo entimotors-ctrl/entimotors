@@ -25,6 +25,50 @@ const SUPABASE_URL = process.env["SUPABASE_URL"];
 const SERVICE_KEY = process.env["SUPABASE_SERVICE_KEY"];
 const ANON_KEY = process.env["SUPABASE_ANON_KEY"];
 
+/* ── A DÓNDE VUELVE UN ENLACE DE RECUPERACIÓN ───────────────────────────────
+   ENTIMOTORS son dos aplicaciones en dos origins distintos: el taller y «Mi
+   Trabajo». Un enlace de alta tiene que aterrizar en el que le corresponde a
+   la persona, o la recibirá una app que va a rechazarla.
+
+   El destino lo decide el SERVIDOR a partir del rol guardado en `perfiles`.
+   Nunca se lee un redirect de la petición: si el cliente pudiera elegirlo,
+   bastaría con pedir un alta apuntando a un sitio propio para quedarse con el
+   token de recuperación de la cuenta recién creada.
+
+   Ninguna de las dos variables tiene valor por defecto, y eso es deliberado:
+   sin la del producto que toca, la recuperación FALLA. Mandar a un mecánico al
+   taller «mientras tanto» sería devolverle un enlace que no puede usar. */
+const ADMIN_ORIGIN = process.env["ENTIMOTORS_ADMIN_ORIGIN"];
+const MECHANIC_ORIGIN = process.env["ENTIMOTORS_MECHANIC_ORIGIN"];
+
+/* La recuperación no tiene página propia: recovery.js corre dentro del
+   index.html de la app y lee el hash que deja Supabase. Ver taller-demo/recovery.js. */
+function urlDeRegreso(base: string): string | null {
+  let u: URL;
+  try { u = new URL(base); } catch { return null; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  return base.replace(/\/+$/, "") + "/index.html";
+}
+
+/** Qué app le toca a cada rol. Allowlist fija: lo que no está, no pasa. */
+export function destinoDeRecuperacion(rol: string):
+  { ok: true; url: string } | { ok: false; error: string } {
+  let base: string | undefined;
+  if (rol === "mecanico") base = MECHANIC_ORIGIN;
+  // El desarrollador vuelve al taller porque es donde vive panel-tecnico.html;
+  // entrar al taller sigue sin poder, eso lo decide la propia app.
+  else if (rol === "admin" || rol === "cajero" || rol === "desarrollador") base = ADMIN_ORIGIN;
+  else return { ok: false, error: `Rol sin destino de recuperación: "${rol}".` };
+
+  if (!base) {
+    const falta = rol === "mecanico" ? "ENTIMOTORS_MECHANIC_ORIGIN" : "ENTIMOTORS_ADMIN_ORIGIN";
+    return { ok: false, error: `Falta ${falta} en el servidor: no se puede generar el enlace.` };
+  }
+  const url = urlDeRegreso(base);
+  if (!url) return { ok: false, error: "La dirección configurada para esta app no es válida." };
+  return { ok: true, url };
+}
+
 if (!SUPABASE_URL || !SERVICE_KEY) {
   throw new Error("Faltan SUPABASE_URL y SUPABASE_SERVICE_KEY");
 }
@@ -185,8 +229,9 @@ router.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req: Pet
 
   // el disparador `al_crear_usuario` ya hizo el perfil como mecánico;
   // aquí se le pone el nombre, el teléfono y el rol — en nombre del admin
-  const { error: errPerfil } = await comoElAdmin(req.quien!.token)
-    .from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId);
+  const { data: perfilGuardado, error: errPerfil } = await comoElAdmin(req.quien!.token)
+    .from("perfiles").update({ nombre, telefono: telefono || null, rol }).eq("id", nuevoId)
+    .select("rol").single();
 
   if (errPerfil) {
     // sin perfil correcto la cuenta no sirve: se deshace el alta
@@ -196,19 +241,34 @@ router.post("/admin/usuarios", exigirConfiguracion, exigirAdmin, async (req: Pet
     return;
   }
 
-  // enlace de un solo uso para que la persona ponga su propia contraseña
+  /* Enlace de un solo uso para que la persona ponga su propia contraseña. El
+     destino sale del rol REAL que quedó en `perfiles`, no del que venía en la
+     petición: si el disparador o una política lo hubieran cambiado, manda lo
+     que hay en la base. */
   let enlace: string | null = null;
-  try {
-    const { data: link } = await servidor.auth.admin.generateLink({ type: "recovery", email: correo });
-    enlace = link?.properties?.action_link ?? null;
-  } catch { enlace = null; }
+  let avisoEnlace: string | null = null;
+  const destino = destinoDeRecuperacion(String(perfilGuardado?.rol ?? rol));
+  if (!destino.ok) {
+    avisoEnlace = destino.error;
+    logger.error({ rol: perfilGuardado?.rol ?? rol }, "sin destino de recuperación: no se genera enlace");
+  } else {
+    try {
+      const { data: link } = await servidor.auth.admin.generateLink({
+        type: "recovery", email: correo,
+        options: { redirectTo: destino.url },
+      });
+      enlace = link?.properties?.action_link ?? null;
+    } catch { enlace = null; }
+  }
 
   res.status(201).json({
     usuario: { id: nuevoId, correo, nombre, telefono, rol, activo: true },
     enlaceParaEstablecerClave: enlace,
     nota: enlace
       ? "Pásale este enlace a la persona. Es de un solo uso: ahí elige su contraseña."
-      : "La cuenta está creada. Para darle contraseña: panel de Supabase → Authentication → el usuario → Reset password.",
+      : (avisoEnlace ?? "") +
+        (avisoEnlace ? " " : "") +
+        "La cuenta está creada. Para darle contraseña: panel de Supabase → Authentication → el usuario → Reset password.",
   });
 });
 

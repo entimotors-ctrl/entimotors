@@ -31,11 +31,20 @@ cp -r "$ORIGEN"/. "$DESTINO"/
 # lo que no es parte de este producto
 rm -rf "$DESTINO/build-mecanicos" "$DESTINO/hacer-build-mecanicos.sh" \
        "$DESTINO/config-local.js" "$DESTINO/config-local.example.js" \
-       "$DESTINO/panel-tecnico.html" "$DESTINO/supabase"
+       "$DESTINO/panel-tecnico.html" "$DESTINO/supabase" \
+       "$DESTINO/README.md" "$DESTINO/CHANGELOG.md"
 
 # lo que sí lo distingue
 cp "$ORIGEN/build-mecanicos/build-target.js" "$DESTINO/build-target.js"
 cp "$ORIGEN/build-mecanicos/manifest.json"   "$DESTINO/manifest.json"
+cp "$ORIGEN/build-mecanicos/_headers"        "$DESTINO/_headers"
+
+# Sin _redirects a propósito: la app es un único index.html y la recuperación
+# vuelve a la raíz con el token en el hash, así que no hace falta reescribir
+# nada. Y un "/* /index.html 200" sería peor que inútil: si build-target.js
+# faltara, Netlify devolvería index.html con código 200, el navegador
+# intentaría ejecutar HTML como JavaScript y el producto caería a "admin" en
+# el origin de los mecánicos. Mejor un 404 franco.
 
 # fuera la etiqueta de config-local.js (y su comentario)
 # Ojo: el comentario de config-local está por encima de TODO el bloque de
